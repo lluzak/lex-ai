@@ -35,38 +35,124 @@ The model stores this weight explicitly (§4) so that search and AI can rank a 7
 
 ---
 
-## 2. Architecture
+## 2. Architecture (Go, built to scale)
+
+### 2.1 Design principles
+1. **The read path and the write path are separate.** Ingestion (slow, bursty, talks to flaky government sites) never shares resources with user traffic. Users only read from **read models**: the search index, the cache, pre-rendered pages.
+2. **Precompute, don't compute per request.** Legal texts change rarely and are read constantly. At ingest time we render each act, article, ruling and interpretation into its final HTML/JSON and push it to object storage and the CDN. A page view is then a CDN hit, not a database query.
+3. **Everything is a stream of events.** Each pipeline stage (fetch → extract → parse → link → index → embed) is an independent consumer on a durable event bus. Stages scale on their own, retry on their own, and can be re-run over the whole corpus (for example, after a parser fix) by replaying events.
+4. **Stateless services, one binary.** Start as a **modular monolith**: one Go codebase, one binary, with the role chosen at startup (`lexai api`, `lexai worker --stage=parse`, `lexai scheduler`). It's as simple to deploy as a monolith, and each role still scales horizontally. Split a module into its own service only when measurements show it needs to.
+5. **Idempotency everywhere.** Every write is keyed by `(source, external_id, content_hash)`. Replays and retries are always safe.
+
+### 2.2 System overview
 
 ```
-            ┌─────────────────────── ingestion (Python workers) ───────────────────────┐
- Sejm ELI ─▶│ fetcher ─▶ raw store (S3/MinIO, immutable) ─▶ parser ─▶ normalizer ─▶ DB │
- EUREKA  ──▶│   ▲ scheduler (daily delta + periodic full re-sync)                      │
- (later) ──▶│   └ job queue (Postgres-based: Procrastinate / or Redis+Celery)          │
-            └──────────────────────────────────────────────────────────────────────────┘
-                                         │
-                       ┌─────────────────┼──────────────────┐
-                       ▼                 ▼                  ▼
-                 PostgreSQL         OpenSearch          (later) pgvector
-              (source of truth)  (full-text, Polish     embeddings on
-                                  morphology)            chunks
-                       └──────────┬──────┴──────────────────┘
-                                  ▼
-                        API (FastAPI, REST + OpenAPI)
-                                  │
-                ┌─────────────────┼─────────────────────┐
-                ▼                 ▼                     ▼
-          Web UI (Next.js)   Public API          (later) AI layer:
-          search, reader,                         RAG Q&A, MCP server,
-          version timeline                        agent tools
+                         ┌────────────────────────── WRITE PATH (ingestion) ───────────────────────────┐
+ Sejm ELI ─┐             │                                                                              │
+ EUREKA ───┤  scheduler ─┼─▶ fetch ─▶ extract ─▶ parse ─▶ link/resolve ─▶ render ─▶ index ─▶ embed     │
+ CBOSA ────┤  (cron +    │    │        (PDF/OCR)  (unit     (citations,     (HTML/    (Open-    (vectors, │
+ SN/TK/... ┘   backfill) │    ▼                    tree)     relations)      JSON)     Search)   Phase 4)  │
+                         │  raw object store (S3/MinIO, immutable, content-addressed)                   │
+                         │            each arrow = NATS JetStream subject, consumers scale out          │
+                         └───────────────────────────────┬──────────────────────────────────────────────┘
+                                                         │ transactional outbox
+                              ┌──────────────────────────┼───────────────────────────┐
+                              ▼                          ▼                           ▼
+                      PostgreSQL 16+               OpenSearch cluster          Object storage + CDN
+                      primary + read replicas      (full-text, Polish          (pre-rendered acts,
+                      (source of truth, graph,     morphology, k-NN later)     articles, rulings,
+                       pgvector later)                                          PDFs)
+                              └──────────────┬───────────┴───────────────────────────┘
+                         ┌───────────────────┴──── READ PATH (user traffic) ─────────────────────────────┐
+                         │  CDN ─▶ edge cache hit (most pages)                                            │
+                         │   └─▶ Go API pods (stateless, HPA) ─▶ Redis/Valkey cache ─▶ OpenSearch / PG    │
+                         │        ├─ REST/JSON (public API, OpenAPI)                                     │
+                         │        ├─ Next.js web (SSR for search, ISR/static for documents)              │
+                         │        └─ MCP server + AI gateway (Phase 4, streaming answers)                 │
+                         └────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-**Stack choices (recommended):**
-- **Python 3.12 + FastAPI** for both ingestion and the API. One language for scraping, parsing and later AI/embeddings.
-- **PostgreSQL 16** as the source of truth, with the **pgvector** extension added later so the AI layer needs no new database.
-- **OpenSearch** for full-text search with the `analysis-stempel` / morfologik plugin. Polish inflection makes this essential: "podatku", "podatkiem" and "podatek" must all match. Postgres FTS has no good built-in Polish stemmer.
-- **MinIO / S3** for raw downloads (PDF, HTML, JSON). We can always re-parse from these without hitting the sources again.
-- **Next.js** for the frontend.
-- **Docker Compose** for local development. Deploy anywhere later.
+### 2.3 Technology choices
+
+| Concern | Choice | Why |
+|--------|--------|-----|
+| Language | **Go 1.23+** for API, workers, scheduler, crawlers, parsers, MCP server | Fast, cheap concurrency for thousands of parallel fetches, small static binaries, simple to operate |
+| HTTP API | `net/http` + **chi** router, OpenAPI spec with **oapi-codegen** (spec-first) | Standard library speed, generated typed handlers and client SDKs |
+| DB access | **pgx v5** + **sqlc** (type-safe SQL generated at build time), migrations with **goose** or **Atlas** | No ORM overhead, SQL kept explicit and reviewable |
+| Event bus / queue | **NATS JetStream** | Written in Go, durable streams, consumer groups, replay, key-value store (for distributed rate limits and locks), very low latency, one small binary to run |
+| Full-text search | **OpenSearch** with the Stempel/morfologik Polish analyzer, client `opensearch-go` | Polish inflection, highlighting, aggregations for filters; scales by sharding |
+| Cache | **Valkey/Redis** (API response and hot-document cache), plus in-process **ristretto** LRU on each pod | Two cache layers: about 1 ms from memory, a few ms from Redis |
+| Crawling | `net/http` + **goquery** for HTML; **chromedp** only if a portal needs a real browser | Most sources are plain HTML/JSON; a headless browser is a last resort |
+| PDF / OCR | Separate `extract` worker image that runs **poppler `pdftotext`** and **Tesseract (`pol`)** as subprocesses, driven from Go | Go has no mature PDF/OCR libraries; isolating the C tools in one worker type keeps the other images small |
+| Object storage | **S3-compatible** (MinIO locally, any S3 in the cloud), content-addressed keys `sha256/ab/cd/...` | Cheap, infinitely scalable, natural de-duplication |
+| Frontend | **Next.js** (SSR for search; ISR/static export for document pages) behind the CDN | Fast first paint, SEO for public legal pages |
+| Vectors (Phase 4) | **pgvector** (HNSW) up to roughly 10–20M chunks; above that, OpenSearch k-NN or Qdrant | Start simple, with a measured migration point |
+| LLM / MCP (Phase 4) | Official **Anthropic Go SDK**, official **MCP Go SDK** (`modelcontextprotocol/go-sdk`) | AI layer stays in Go too |
+| Observability | **OpenTelemetry** traces + **Prometheus** metrics + **Grafana**, structured logs with `slog` | p95/p99 latency per endpoint, ingest lag per source |
+| Deploy | Docker → **Kubernetes**; **KEDA** autoscales workers on NATS consumer lag, HPA scales API pods on CPU/RPS | Workers grow for a backfill and shrink to near zero when idle |
+
+No Python in the core system. The only place it may appear is offline ML experiments (benchmarking embedding models), and those just call the same Go API.
+
+### 2.4 Repository layout (Go monorepo)
+
+```
+cmd/lexai/              main: picks role (api | worker | scheduler | mcp | migrate)
+internal/
+  connectors/           one package per source: sejmeli, eureka, cbosa, sn, tk, saos, ...
+    connector.go        interface: ListChanged(ctx, since) / Fetch(ctx, id) / Parse(raw)
+  pipeline/             stage runners, NATS subjects, retries, dead-letter handling
+  parse/                act structure parser, ruling sections, interpretation sections
+  citation/             "art. 15 ust. 1 ustawy o CIT" → act_unit resolver (shared by all sources)
+  render/               HTML/JSON renderer for pre-built pages
+  store/                sqlc-generated queries, repositories, outbox
+  search/               OpenSearch mappings, indexer, query builder
+  api/                  HTTP handlers (generated from openapi.yaml), middleware, caching
+  ratelimit/            distributed per-host token buckets (NATS KV)
+  ai/                   (Phase 4) chunking, embeddings, retrieval, RAG, MCP tools
+api/openapi.yaml
+migrations/
+web/                    Next.js app
+deploy/                 docker-compose.yml, Helm charts, KEDA scalers
+testdata/               real source snapshots for golden-file parser tests
+```
+
+### 2.5 Ingestion pipeline: how it scales
+
+- **Subjects:** `ingest.fetch.<source>`, `ingest.extract`, `ingest.parse.<doctype>`, `ingest.link`, `ingest.render`, `ingest.index`, `ingest.embed`. Each message carries only IDs and object-store keys, never document bodies, so messages stay small.
+- **Concurrency:** each worker pod runs N goroutines per stage (configurable). A full backfill is about adding pods: KEDA watches consumer lag and scales from 1 to 50+ replicas.
+- **Politeness vs throughput:** throughput comes from parallelism *across* sources and from the CPU-bound stages (parse, render, index). Each government host keeps a strict **distributed rate limit** (token bucket in NATS KV, e.g. 2–5 req/s per host) no matter how many fetch pods run. SAOS bulk dumps and the ELI API make the initial backfill fast without hammering anyone.
+- **Change detection:** the fetch stage hashes the raw body. If the hash didn't change, the pipeline stops there. Daily deltas cost almost nothing.
+- **Failures:** bounded retries with exponential backoff, then a dead-letter stream with the error and the raw key. A dashboard shows parse failure rates per source, so a site redesign is caught within hours.
+- **Reprocessing:** a parser fix → bump the parser version → replay `ingest.parse` over affected raw objects. Fetching again is never needed.
+- **Consistency:** Postgres writes and their outgoing events commit in one transaction (**transactional outbox**). A relay publishes the events to NATS, so the index and pre-rendered pages can never silently miss an update.
+
+### 2.6 Read path: how it stays fast
+
+**Latency targets (p95, server side):**
+
+| Request | Target | How |
+|---------|--------|-----|
+| Open an act / article / ruling / interpretation page | **< 50 ms** (CDN hit: < 20 ms) | Pre-rendered at ingest, served from CDN; on a miss, one key lookup in object storage or Redis |
+| Lookup by citation (`Dz.U. 2024 poz. 1`, `II FSK 1234/21`, "art. 415 KC") | **< 30 ms** | Dedicated normalized-identifier table + in-memory alias map on each API pod |
+| Full-text search with filters | **< 150 ms** | OpenSearch with tuned mappings, filter caching, `search_after` pagination, response cache in Redis for popular queries |
+| "Case law / interpretations citing this article" | **< 80 ms** | Precomputed reverse-citation lists per `act_unit`, refreshed by the `link` stage |
+| AI answer (Phase 4) | first token **< 1.5 s**, streamed | Hybrid retrieval in parallel goroutines, result cache, streaming over SSE |
+
+**Techniques:**
+- **Cache invalidation is event-driven.** When `render` publishes a new version of a document, it purges exactly that CDN path and Redis key. TTLs can therefore be long (days), with no stale reads.
+- **Stable versioned URLs** (`/akt/DU/1964/16@2025-01-01#art.415`). Historical versions are immutable and can be cached forever.
+- **Postgres:** read replicas for API reads, PgBouncer for connection pooling, the big tables (`act_unit`, `chunk`, `citation`) hash-partitioned by `document_id`, `ltree` for unit paths, covering indexes for hot queries. The API almost never runs ad-hoc joins on the hot path, because read models are precomputed.
+- **OpenSearch:**
+  - one index per doc family, accessed through aliases, so a full **reindex runs with zero downtime** (build `rulings_v2`, then swap the alias);
+  - shards sized at about 20–40 GB;
+  - search at `act_unit` level with `collapse` on `document_id`, so a result jumps straight to the right article.
+- **API pods** are stateless Go binaries (~20–30 MB RAM idle). Scale horizontally behind the load balancer, with gzip/brotli and HTTP/2.
+
+### 2.7 Capacity planning (estimate, verify in spikes)
+Order of magnitude: **a few million documents** (acts + interpretations + rulings), **tens of millions of act units and chunks**, **raw store in the low terabytes** (PDFs dominate). Rulings will be the largest set. This is comfortably within a single well-tuned Postgres primary with replicas and a 3–5 node OpenSearch cluster. The design leaves room to grow 10× by adding replicas, shards and pods, with no change to the architecture.
+
+### 2.8 Local development
+`docker compose up` starts Postgres, NATS, OpenSearch, Valkey and MinIO. Run `go run ./cmd/lexai api` and `go run ./cmd/lexai worker --stage=all` against it. Parsers are tested with golden files from real source snapshots in `testdata/`.
 
 ---
 
@@ -104,7 +190,7 @@ The model stores this weight explicitly (§4) so that search and AI can rank a 7
 6. **Delta:** daily crawl of new rulings per portal. Also re-check rulings from the last few months, since finality and the uzasadnienie are often added later.
 
 ### 3.4 General rules for all sources
-- Every source gets its own **connector** module with the same interface: `list_changed(since) → ids`, `fetch(id) → raw`, `parse(raw) → normalized`.
+- Every source gets its own Go **connector** package (`internal/connectors/<source>`) implementing the same interface: `ListChanged(ctx, since) → ids`, `Fetch(ctx, id) → raw`, `Parse(raw) → normalized`. Adding a new source means adding one package; the pipeline (§2.5) is shared.
 - Every fetch is stored raw with a content hash, so we only re-parse when the content changed.
 - Ingestion is idempotent. Re-running a job never creates duplicate rows.
 
@@ -178,7 +264,7 @@ Polish law is published as amendments. A consolidated text (*tekst jednolity*) i
 
 ## 6. AI layer (Phase 4, prepared from Phase 1)
 
-1. **Embeddings:** embed each `chunk` and store it in pgvector. Use a multilingual model that handles Polish well, and benchmark candidates on our own query set before choosing.
+1. **Embeddings:** the `embed` pipeline stage (§2.5) embeds each `chunk` in batches and stores it in pgvector. Use a multilingual model that handles Polish well, and benchmark candidates on our own query set before choosing.
 2. **Hybrid retrieval:** combine BM25 (OpenSearch) and vector search with reciprocal rank fusion, then a reranker. Apply a temporal filter (`valid_on = date`).
 3. **RAG Q&A:** the model answers **only from retrieved sources** and gives a mandatory citation for every claim, linked to the article or interpretation. Add a "not legal advice" disclaimer. If no supporting sources are found, it refuses to answer.
 4. **Agent access:** run an **MCP server** that exposes these tools: `search_law`, `get_act`, `get_article(act, path, as_of)`, `search_interpretations`, `get_interpretation`, `search_rulings`, `get_ruling`, `find_citing(article)`. Claude and other agents can then use the database directly.
@@ -196,7 +282,7 @@ Polish law is published as amendments. A consolidated text (*tekst jednolity*) i
 
 | Phase | Duration (1–2 devs) | Deliverables |
 |-------|---------------------|--------------|
-| **0. Foundations** | 1 week | Repo layout (`ingest/`, `api/`, `web/`, `infra/`), Docker Compose (Postgres, OpenSearch, MinIO), DB migrations (Alembic), CI (lint + tests), connector interface |
+| **0. Foundations** | 1 week | Go monorepo (§2.4), Docker Compose (Postgres, NATS, OpenSearch, Valkey, MinIO), migrations (goose/Atlas), sqlc, OpenAPI codegen, pipeline skeleton with outbox, CI (`go vet`, `golangci-lint`, tests), connector interface, OpenTelemetry |
 | **0.5 Spikes** | 3–5 days | (a) ELI API: confirm endpoints, the change feed, HTML coverage by year. (b) EUREKA: map the internal JSON API, measure volume, check terms. (c) CBOSA page structure, SAOS freshness and dump format. (d) A structure parser prototype on 20 representative acts |
 | **1. Acts MVP** | 3–4 weeks | Full DU+MP backfill, structure parsing, relations, daily delta, OpenSearch index, API for search and the act reader, basic web UI |
 | **1b. EUREKA MVP** | 2–3 weeks (can run in parallel) | EUREKA connector, backfill, section parsing, citation extraction and linking to articles, UI for interpretations |
@@ -223,12 +309,13 @@ Polish law is published as amendments. A consolidated text (*tekst jednolity*) i
 | Court portals have no APIs; HTML changes break crawlers | One parser per portal with snapshot tests; SAOS as a backup source; alert when parse rates drop |
 | Personal data in rulings (GDPR) | Store only what courts published, no de-anonymization or profiling, takedown process, no indexing of party names that slipped through anonymization (detect and mask) |
 | Users reading a single ruling as "the law" | Show binding-force badges, and explain in the UI that in Poland a ruling binds only its own case unless marked otherwise |
-| Scale (millions of units and chunks) | Postgres partitioning by source/year if needed; OpenSearch sharding; embeddings in batches |
+| Scale (millions of documents, tens of millions of units and chunks) | Read/write separation, pre-rendered pages on CDN, hash-partitioned big tables, read replicas, OpenSearch aliases and sharding, KEDA-scaled workers (§2) |
+| Operational complexity of NATS + OpenSearch + Postgres + Redis | One Go binary with roles, managed services where possible, Helm charts from day one, a single `docker compose up` for development |
 
 ---
 
 ## 9. Immediate next steps
-1. Approve the stack (§2). Decide where it will be hosted.
+1. Approve the Go stack and architecture (§2). Decide where it will be hosted (managed Postgres/OpenSearch or self-hosted on Kubernetes).
 2. Phase 0: scaffold the repo and Docker Compose.
 3. Run the two spikes: the ELI API and EUREKA endpoint mapping. Record the findings in `docs/sources/`.
 4. Add a third spike: CBOSA page structure and SAOS freshness/dump format.
