@@ -38,8 +38,10 @@ The model stores this weight explicitly (§4) so that search and AI can rank a 7
 ## 2. Architecture: a Go monolith on Postgres, one VPS
 
 ### 2.1 Design principles
-1. **Two runtime parts, nothing else:** **one Go binary (`lexai`)** and **one PostgreSQL**. There's no reverse proxy, message broker, cache server, search cluster, object store or frontend build. The binary does its own HTTPS, serves the website, runs the background jobs and the scheduler. Postgres holds everything else.
-2. **Postgres is the only state.** It handles data, full-text search, the job queue, raw downloads, pre-rendered pages, and later vectors. **One thing to back up, one thing to restore.** If Postgres is restored, the whole system is restored.
+1. **Two processes on the server, nothing else:** **one Go binary (`lexai`)** and **one PostgreSQL**. There's no reverse proxy, message broker, cache server, search cluster or frontend build. The binary does its own HTTPS, serves the website, runs the background jobs and the scheduler.
+2. **Two places for state, each doing one job:**
+   - **Postgres** holds all structured data: documents, full-text search, the job queue, pre-rendered pages, and later vectors.
+   - An **S3-compatible bucket** holds files: raw downloads, original PDFs, attachments, OCR outputs and backups. It's a managed external service (e.g. Hetzner Object Storage, Backblaze B2, Cloudflare R2, Scaleway, OVH), not another thing we run on the VPS. The code uses the S3 API only, so any provider works and we can switch with a config change.
 3. **The workload shape is "big once, then small".** The history backfill is a one-off job measured in days, limited by polite request rates to government sites. After it, the daily delta is a small trickle of documents, and the server is mostly idle and fast for readers.
 4. **Precompute, don't compute per request.** Legal texts rarely change after publication. When a document is ingested, its final HTML is rendered once and stored in Postgres. A page view is one primary-key lookup plus an in-memory cache.
 5. **Boring, explicit Go.** Standard library first, generated SQL (sqlc), no ORM, no framework. A new developer can read the whole request path in an afternoon.
@@ -63,14 +65,18 @@ The model stores this weight explicitly (§4) so that search and AI can rank a 7
                      │                 ▼                                                        │
                      │  PostgreSQL 16+                                                          │
                      │   documents · act units · rulings · interpretations · relations          │
-                     │   raw downloads (zstd bytea) · rendered HTML · FTS (Polish) · trigram    │
+                     │   file metadata (key, sha256) · rendered HTML · FTS (Polish) · trigram   │
                      │   job queue (River) · pgvector (Phase 4)                                 │
                      │                                                                          │
                      │  CLI tools inside the image: pdftotext (poppler), tesseract (pol)        │
-                     └──────────────────────────────┬───────────────────────────────────────────┘
-                                                    │ continuous WAL archive + nightly base backup
-                                                    ▼
-                                  off-site S3-compatible bucket (wal-g)
+                     └───────────────┬───────────────────────────────────┬──────────────────────┘
+                                     │ S3 API (raw downloads, PDFs,      │ wal-g: WAL archive +
+                                     │ attachments, OCR output)          │ nightly base backup
+                                     ▼                                   ▼
+                     S3-compatible bucket  `lexai-files`       S3-compatible bucket  `lexai-backup`
+                     (versioning on)                           (other provider/region if possible)
+                                     ▲
+ browser ── PDF download ────────────┘  short-lived presigned URL (or proxied through lexai)
 ```
 
 ### 2.3 What does what
@@ -86,23 +92,24 @@ The model stores this weight explicitly (§4) so that search and AI can rank a 7
 | DB access | **pgx v5** + **sqlc**, migrations with **goose** (embedded, run by `lexai migrate`) | |
 | Jobs + scheduling | **River** (`riverqueue/river`) on Postgres | A job is enqueued in the same transaction as the data that triggers it. River UI is mounted as an admin page inside the binary |
 | Full-text search | **Postgres FTS** with a **Polish ispell/hunspell dictionary** (e.g. sjp.pl) + **pg_trgm** + `unaccent` | Stored weighted `tsvector` columns with GIN indexes |
-| Raw downloads | Postgres table `raw_blob` (`sha256` PK, zstd-compressed `bytea`) | Content-addressed, deduplicated, backed up with everything else |
-| Large PDFs | **Don't keep copies of PDFs the source keeps permanently available** (Dz.U./M.P. PDFs at their ELI URL). Store the extracted text + the source URL + a hash. Keep a blob only for sources that are unstable or may disappear | This keeps the database in the tens to low hundreds of GB instead of terabytes |
+| Files | **S3-compatible bucket** through a small `blobstore` interface: S3 implementation (`minio-go` or `aws-sdk-go-v2`, any endpoint) and a local-disk implementation for development and tests | Content-addressed keys `raw/sha256/ab/cd/<hash>.zst`; Postgres stores only key, hash, size and type. Deduplicated automatically |
+| What goes in the bucket | Every raw download (JSON/HTML zstd-compressed), **all original PDFs** and annexes, OCR output | We keep our own copy of everything, so we never depend on a source staying online, and we can re-parse at any time |
+| PDF downloads for users | Short-lived **presigned URLs** straight from the bucket (or proxied through `lexai` if the bucket must stay private) | Large files never pass through the VPS |
 | Rendered pages | `document.rendered_html` (+ `etag`), written by the `render` job | Served with `ETag` / `Cache-Control`; a ristretto LRU in RAM serves hot pages |
 | Cache | In-process **ristretto** | Invalidated on render (same process, no network) |
 | Crawling | `net/http` + **goquery**; in-process per-host rate limiter (`x/time/rate`) | `chromedp` only if a portal truly needs a browser |
 | PDF / OCR | `pdftotext` and `tesseract` CLIs, called from Go | Tools inside the container image, not services |
 | Vectors (Phase 4) | **pgvector** (HNSW) in the same Postgres | LLM and embeddings via hosted APIs (Anthropic Go SDK); no GPU |
-| Backups | **wal-g** (a single Go binary) → off-site S3-compatible bucket | Point-in-time recovery for the whole system |
+| Backups | Postgres: **wal-g** (a single Go binary) → backup bucket. Files: **bucket versioning** + replication to a second bucket/provider (`rclone` cron or the provider's replication) | Point-in-time recovery for the database; files are immutable and content-addressed, so they're easy to copy |
 | Monitoring | `slog` logs, `/healthz`, `/metrics`, external uptime ping, River UI | Enough for one box |
 | Optional, outside the server | **Cloudflare** free plan | Edge cache + DDoS protection with zero ops; the system doesn't depend on it |
 
 ### 2.4 Deployment
 
-- **Server:** one VPS, e.g. **8 vCPU / 32 GB RAM / 0.5–1 TB NVMe** to start. Most of the RAM is Postgres cache. Size the disk after the spikes, once we've measured the raw data.
+- **Server:** one VPS, e.g. **8 vCPU / 32 GB RAM / 0.5 TB NVMe** to start. Most of the RAM is Postgres cache. The local disk holds only Postgres; the files (likely low terabytes, mostly PDFs) live in the bucket, where storage is cheap and grows without resizing the server.
 - **Layout:** Docker Compose with **two services**, `postgres` and `lexai`. Alternatively: Postgres from distro packages + `lexai` as a systemd unit. Both are fine; Compose is easier to rebuild from scratch.
 - **Release:** CI builds the image → pull on the server → `lexai migrate` → restart. A restart takes about 1 second; the brief gap is acceptable at this scale.
-- **Backups:** wal-g archives WAL continuously, plus a nightly base backup, to an off-site bucket. Since Postgres is the only state, that's the whole backup. **Test a restore every month** onto a fresh VPS; the target is "server lost → site back in under an hour".
+- **Backups:** wal-g archives WAL continuously, plus a nightly base backup, to the backup bucket. Files are already off the server, in a versioned bucket replicated to a second location. The VPS itself holds nothing that can't be rebuilt. **Test a restore every month** onto a fresh VPS; the target is "server lost → site back in under an hour".
 - **Security:** SSH keys only; firewall allowing only 80/443; Postgres listening on localhost/socket only; admin pages behind auth; unattended security upgrades.
 
 ### 2.5 Ingestion: backfill once, then trickle
@@ -143,7 +150,6 @@ The model stores this weight explicitly (§4) so that search and AI can rank a 7
 **Postgres tuning:**
 - `shared_buffers` ≈ 25% RAM, `effective_cache_size` ≈ 70%, `work_mem` sized for ranking queries;
 - `ltree` for unit paths;
-- `raw_blob` on its own tablespace if useful;
 - `VACUUM ANALYZE` after each bulk load.
 - During the backfill: bigger `max_wal_size`, then normal settings afterwards.
 
@@ -153,6 +159,7 @@ Steps in order, each independent, none needed on day one:
 2. Move to a bigger VPS (vertical scaling goes far).
 3. Put Postgres on its own server, then add a read replica for search.
 4. Only if Postgres FTS proves insufficient in measurements, try ParadeDB `pg_search` (BM25, still inside Postgres) before any external search engine. The `search.Engine` interface keeps this swap local.
+5. Put a CDN in front of the files bucket for PDF downloads if traffic grows (Cloudflare R2 has free egress; others can sit behind Cloudflare).
 
 ### 2.9 Repository layout
 
@@ -169,13 +176,14 @@ internal/
   api/                  JSON API
   store/                sqlc queries + embedded goose migrations
   search/               search.Engine interface + Postgres FTS implementation
+  blobstore/            Store interface: Put/Get/Exists/PresignGet; s3 (any endpoint) + localfs (dev/tests)
   ai/                   (Phase 4) chunking, embeddings, retrieval, RAG, MCP tools
   assets/               css, htmx.min.js, icons (go:embed)
 deploy/                 docker-compose.yml (postgres + lexai), wal-g config, systemd unit
 testdata/               real source snapshots for golden-file parser tests
 ```
 
-**Local development:** `docker compose up postgres`, then `go run ./cmd/lexai serve` and `go run ./cmd/lexai backfill sejmeli --year 2024`. That's the same setup as production.
+**Local development:** `docker compose up postgres` (the `localfs` blobstore writes to `./var/files`; to test the real S3 path, add a MinIO container in the dev Compose file only, never in production), then `go run ./cmd/lexai serve` and `go run ./cmd/lexai backfill sejmeli --year 2024`. That's the same setup as production.
 
 ---
 
@@ -226,7 +234,7 @@ source            (id, code: 'sejm_eli' | 'eureka' | ..., base_url)
 document          (id, source_id, external_id, doc_type, title, signature/eli_id,
                    publisher, year, position, issued_at, published_at,
                    in_force_from, in_force_to, status, issuer, language,
-                   raw_sha256 → raw_blob, content_hash, rendered_html, etag,
+                   raw_sha256 → file, content_hash, rendered_html, etag,
                    created_at, updated_at)
                    doc_type: act | consolidated_text | interpretation_individual |
                              interpretation_general | wis | wia | explanatory_note | ruling ...
@@ -247,8 +255,9 @@ relation          (id, from_document_id, to_document_id, type, from_unit_id?, to
 citation          (id, from_document_id, from_span, to_unit_id?, raw_text, resolved: bool)
                                                  -- interpretation/ruling → article links
 keyword           (id, name)  +  document_keyword (document_id, keyword_id)
-attachment        (id, document_id, kind: pdf|html|annex, source_url, raw_sha256?)
-raw_blob          (sha256 PK, content_type, size, zstd_data bytea, fetched_at, source_url)
+attachment        (id, document_id, kind: pdf|html|annex, source_url, file_sha256)
+file              (sha256 PK, bucket_key, content_type, size, compression, fetched_at,
+                   source_url)                   -- the bytes live in the S3-compatible bucket
 source_cursor     (source_id PK, cursor, updated_at)   -- resumable backfill / delta
 
 -- AI-ready (created now, filled in Phase 4)
@@ -330,7 +339,7 @@ Polish law is published as amendments. A consolidated text (*tekst jednolity*) i
 
 | Risk | Mitigation |
 |------|------------|
-| EUREKA has no official API; endpoints may change or block us | Keep raw downloads in Postgres, low-rate polite crawling, alert on parser failures, ask MF for an official export |
+| EUREKA has no official API; endpoints may change or block us | Keep every raw download in the files bucket, low-rate polite crawling, alert on parser failures, ask MF for an official export |
 | Older acts are PDF scans only | OCR (Tesseract with Polish models) with a quality flag; give the original PDF priority in the UI |
 | Structure parsing edge cases (annexes, tables, formulas, "art. 15a¹") | Grow a test corpus of real acts; fall back to unit-less text |
 | Users mistaking our consolidation or AI answers for official text | Show disclaimers, link to the official source, show the origin of every text version |
@@ -338,14 +347,15 @@ Polish law is published as amendments. A consolidated text (*tekst jednolity*) i
 | Personal data in rulings (GDPR) | Store only what courts published, no de-anonymization or profiling, takedown process, no indexing of party names that slipped through anonymization (detect and mask) |
 | Users reading a single ruling as "the law" | Show binding-force badges, and explain in the UI that in Poland a ruling binds only its own case unless marked otherwise |
 | Postgres FTS too slow or not good enough on the full ruling corpus | Benchmark it in the spikes. Fall back to ParadeDB `pg_search` (BM25 still inside Postgres) behind the `search.Engine` interface (§2.8) |
-| Single VPS = single point of failure | Postgres is the only state: wal-g point-in-time backups off-site, monthly restore test, rebuild from Compose + backup in under an hour; optional Cloudflare cache keeps pages readable during short outages |
-| Database grows too large with raw downloads | zstd-compressed blobs; don't keep copies of PDFs the source keeps permanently available (store text + URL + hash); measure sizes in the spikes |
+| Single VPS = single point of failure | Files are already off the server in a versioned, replicated bucket; Postgres has wal-g point-in-time backups; monthly restore test; rebuild from Compose + backup in under an hour; optional Cloudflare cache keeps pages readable during short outages |
+| File storage costs and egress | zstd-compressed raw files, content-addressed dedupe, presigned URLs, a provider with low or zero egress fees (R2, B2 + Cloudflare); measure total size in the spikes |
+| Vendor lock-in on storage | S3 API only behind the `blobstore` interface; moving providers is `rclone sync` + a config change |
 
 ---
 
 ## 9. Immediate next steps
 1. Approve the single-VPS Go architecture (§2). Choose the VPS provider and size (see §2.4).
-2. Phase 0: scaffold the repo and the two-service Compose file; provision the VPS with wal-g backups.
+2. Phase 0: scaffold the repo and the two-service Compose file; provision the VPS, the files bucket and the backup bucket, and set up wal-g.
 3. Run the two spikes: the ELI API and EUREKA endpoint mapping. Record the findings in `docs/sources/`.
 4. Add a third spike: CBOSA page structure and SAOS freshness/dump format. Also benchmark Postgres FTS with the Polish dictionary on a large sample of rulings.
 5. Build the ELI connector and backfill one year (e.g. DU 2024) end-to-end before scaling to all years.
