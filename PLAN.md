@@ -41,7 +41,7 @@ The model stores this weight explicitly (§4) so that search and AI can rank a 7
 1. **Two processes on the server, nothing else:** **one Go binary (`lexai`)** and **one PostgreSQL**. There's no reverse proxy, message broker, cache server, search cluster or frontend build. The binary does its own HTTPS, serves the website, runs the background jobs and the scheduler.
 2. **Two places for state, each doing one job:**
    - **Postgres** holds all structured data: documents, full-text search, the job queue, pre-rendered pages, and later vectors.
-   - An **S3-compatible bucket** holds files: raw downloads, original PDFs, attachments, OCR outputs and backups. It's a managed external service (e.g. Hetzner Object Storage, Backblaze B2, Cloudflare R2, Scaleway, OVH), not another thing we run on the VPS. The code uses the S3 API only, so any provider works and we can switch with a config change.
+   - An **S3-compatible bucket** holds files: raw downloads, original PDFs, attachments, OCR outputs and backups. **Chosen provider: Cloudflare R2** (zero egress fees, S3-compatible endpoint `https://<account_id>.r2.cloudflarestorage.com`, region `auto`). It's a managed service, not something we run on the VPS. The code uses the S3 API only, so we can still switch provider with a config change.
 3. **The workload shape is "big once, then small".** The history backfill is a one-off job measured in days, limited by polite request rates to government sites. After it, the daily delta is a small trickle of documents, and the server is mostly idle and fast for readers.
 4. **Precompute, don't compute per request.** Legal texts rarely change after publication. When a document is ingested, its final HTML is rendered once and stored in Postgres. A page view is one primary-key lookup plus an in-memory cache.
 5. **Boring, explicit Go.** Standard library first, generated SQL (sqlc), no ORM, no framework. A new developer can read the whole request path in an afternoon.
@@ -73,10 +73,10 @@ The model stores this weight explicitly (§4) so that search and AI can rank a 7
                                      │ S3 API (raw downloads, PDFs,      │ wal-g: WAL archive +
                                      │ attachments, OCR output)          │ nightly base backup
                                      ▼                                   ▼
-                     S3-compatible bucket  `lexai-files`       S3-compatible bucket  `lexai-backup`
-                     (versioning on)                           (other provider/region if possible)
+                     R2 bucket  `lexai-files`                  R2 bucket  `lexai-backup`
+                     (immutable keys, never deleted)           (+ weekly copy to a 2nd provider)
                                      ▲
- browser ── PDF download ────────────┘  short-lived presigned URL (or proxied through lexai)
+ browser ── PDF download ────────────┘  public R2 custom domain files.<domain> (cached by Cloudflare)
 ```
 
 ### 2.3 What does what
@@ -84,7 +84,7 @@ The model stores this weight explicitly (§4) so that search and AI can rank a 7
 | Concern | Choice | Notes |
 |--------|--------|-------|
 | Language | **Go 1.23+**: one binary | Web, API, workers, scheduler, crawlers, parsers, MCP |
-| HTTPS | `golang.org/x/crypto/acme/autocert` | Let's Encrypt certificates obtained and renewed by the binary itself; no Caddy or nginx |
+| HTTPS | Site behind **Cloudflare proxy** (same account as R2). Origin uses a **Cloudflare Origin CA certificate** loaded by the binary; firewall accepts 443 only from Cloudflare IP ranges | No Caddy/nginx, no certificate renewal on the box. `autocert` (Let's Encrypt) remains as a fallback when running without Cloudflare |
 | HTTP | `net/http` + **chi**, gzip/brotli middleware | HTTP/2 built in |
 | HTML | **templ** (type-safe Go templates) | Server-rendered; compiled into the binary |
 | Interactivity | **htmx** (vendored, pinned version), embedded with `go:embed` | Live search, filters, tabs, "load more". Pages work without JS |
@@ -92,17 +92,17 @@ The model stores this weight explicitly (§4) so that search and AI can rank a 7
 | DB access | **pgx v5** + **sqlc**, migrations with **goose** (embedded, run by `lexai migrate`) | |
 | Jobs + scheduling | **River** (`riverqueue/river`) on Postgres | A job is enqueued in the same transaction as the data that triggers it. River UI is mounted as an admin page inside the binary |
 | Full-text search | **Postgres FTS** with a **Polish ispell/hunspell dictionary** (e.g. sjp.pl) + **pg_trgm** + `unaccent` | Stored weighted `tsvector` columns with GIN indexes |
-| Files | **S3-compatible bucket** through a small `blobstore` interface: S3 implementation (`minio-go` or `aws-sdk-go-v2`, any endpoint) and a local-disk implementation for development and tests | Content-addressed keys `raw/sha256/ab/cd/<hash>.zst`; Postgres stores only key, hash, size and type. Deduplicated automatically |
+| Files | **Cloudflare R2** (S3 API) through a small `blobstore` interface: S3 implementation (`minio-go` or `aws-sdk-go-v2`, any endpoint) and a local-disk implementation for development and tests | Content-addressed keys `raw/sha256/ab/cd/<hash>.zst`; Postgres stores only key, hash, size and type. Deduplicated automatically |
 | What goes in the bucket | Every raw download (JSON/HTML zstd-compressed), **all original PDFs** and annexes, OCR output | We keep our own copy of everything, so we never depend on a source staying online, and we can re-parse at any time |
-| PDF downloads for users | Short-lived **presigned URLs** straight from the bucket (or proxied through `lexai` if the bucket must stay private) | Large files never pass through the VPS |
+| PDF downloads for users | Original PDFs are public documents, so they're served from an **R2 custom domain** (`files.<domain>`) with Cloudflare caching. Raw downloads and internal files stay private (presigned URLs for admin use) | Large files never pass through the VPS; zero egress cost |
 | Rendered pages | `document.rendered_html` (+ `etag`), written by the `render` job | Served with `ETag` / `Cache-Control`; a ristretto LRU in RAM serves hot pages |
 | Cache | In-process **ristretto** | Invalidated on render (same process, no network) |
 | Crawling | `net/http` + **goquery**; in-process per-host rate limiter (`x/time/rate`) | `chromedp` only if a portal truly needs a browser |
 | PDF / OCR | `pdftotext` and `tesseract` CLIs, called from Go | Tools inside the container image, not services |
 | Vectors (Phase 4) | **pgvector** (HNSW) in the same Postgres | LLM and embeddings via hosted APIs (Anthropic Go SDK); no GPU |
-| Backups | Postgres: **wal-g** (a single Go binary) → backup bucket. Files: **bucket versioning** + replication to a second bucket/provider (`rclone` cron or the provider's replication) | Point-in-time recovery for the database; files are immutable and content-addressed, so they're easy to copy |
+| Backups | Postgres: **wal-g** (a single Go binary) → backup bucket. Files: keys are content-addressed and never overwritten or deleted by the app (R2 bucket lock / retention rules where available); weekly `rclone sync` to a second provider (e.g. Backblaze B2 or Hetzner) so we don't depend on a single vendor | Point-in-time recovery for the database; files are immutable and content-addressed, so they're easy to copy |
 | Monitoring | `slog` logs, `/healthz`, `/metrics`, external uptime ping, River UI | Enough for one box |
-| Optional, outside the server | **Cloudflare** free plan | Edge cache + DDoS protection with zero ops; the system doesn't depend on it |
+| Edge | **Cloudflare** (proxy + cache + DDoS protection) | Caches document pages and PDFs at the edge; nothing to run on the server |
 
 ### 2.4 Deployment
 
@@ -155,11 +155,10 @@ The model stores this weight explicitly (§4) so that search and AI can rank a 7
 
 ### 2.8 If one VPS is ever not enough
 Steps in order, each independent, none needed on day one:
-1. Turn on Cloudflare caching of document pages.
+1. Raise Cloudflare cache TTLs / cache everything for document pages.
 2. Move to a bigger VPS (vertical scaling goes far).
 3. Put Postgres on its own server, then add a read replica for search.
 4. Only if Postgres FTS proves insufficient in measurements, try ParadeDB `pg_search` (BM25, still inside Postgres) before any external search engine. The `search.Engine` interface keeps this swap local.
-5. Put a CDN in front of the files bucket for PDF downloads if traffic grows (Cloudflare R2 has free egress; others can sit behind Cloudflare).
 
 ### 2.9 Repository layout
 
@@ -257,7 +256,7 @@ citation          (id, from_document_id, from_span, to_unit_id?, raw_text, resol
 keyword           (id, name)  +  document_keyword (document_id, keyword_id)
 attachment        (id, document_id, kind: pdf|html|annex, source_url, file_sha256)
 file              (sha256 PK, bucket_key, content_type, size, compression, fetched_at,
-                   source_url)                   -- the bytes live in the S3-compatible bucket
+                   source_url)                   -- the bytes live in R2
 source_cursor     (source_id PK, cursor, updated_at)   -- resumable backfill / delta
 
 -- AI-ready (created now, filled in Phase 4)
@@ -319,7 +318,7 @@ Polish law is published as amendments. A consolidated text (*tekst jednolity*) i
 
 | Phase | Duration (1–2 devs) | Deliverables |
 |-------|---------------------|--------------|
-| **0. Foundations** | 1 week | Go monorepo (§2.9), Postgres with the Polish FTS dictionary, goose migrations, sqlc, River job pipeline skeleton, templ + htmx base layout with embedded assets, autocert HTTPS, two-service Docker Compose, CI (`go vet`, `golangci-lint`, tests), connector interface, VPS provisioning + backups |
+| **0. Foundations** | 1 week | Go monorepo (§2.9), Postgres with the Polish FTS dictionary, goose migrations, sqlc, River job pipeline skeleton, templ + htmx base layout with embedded assets, Cloudflare origin TLS, two-service Docker Compose, CI (`go vet`, `golangci-lint`, tests), connector interface, VPS provisioning + backups |
 | **0.5 Spikes** | 3–5 days | (a) ELI API: confirm endpoints, the change feed, HTML coverage by year. (b) EUREKA: map the internal JSON API, measure volume, check terms. (c) CBOSA page structure, SAOS freshness and dump format. (d) A structure parser prototype on 20 representative acts |
 | **1. Acts MVP** | 3–4 weeks | Full DU+MP backfill, structure parsing, relations, daily delta, Postgres FTS, static act pages, search page with htmx, JSON API |
 | **1b. EUREKA MVP** | 2–3 weeks (can run in parallel) | EUREKA connector, backfill, section parsing, citation extraction and linking to articles, UI for interpretations |
@@ -347,14 +346,14 @@ Polish law is published as amendments. A consolidated text (*tekst jednolity*) i
 | Personal data in rulings (GDPR) | Store only what courts published, no de-anonymization or profiling, takedown process, no indexing of party names that slipped through anonymization (detect and mask) |
 | Users reading a single ruling as "the law" | Show binding-force badges, and explain in the UI that in Poland a ruling binds only its own case unless marked otherwise |
 | Postgres FTS too slow or not good enough on the full ruling corpus | Benchmark it in the spikes. Fall back to ParadeDB `pg_search` (BM25 still inside Postgres) behind the `search.Engine` interface (§2.8) |
-| Single VPS = single point of failure | Files are already off the server in a versioned, replicated bucket; Postgres has wal-g point-in-time backups; monthly restore test; rebuild from Compose + backup in under an hour; optional Cloudflare cache keeps pages readable during short outages |
-| File storage costs and egress | zstd-compressed raw files, content-addressed dedupe, presigned URLs, a provider with low or zero egress fees (R2, B2 + Cloudflare); measure total size in the spikes |
+| Single VPS = single point of failure | Files are already off the server in R2 with a weekly copy to a second provider; Postgres has wal-g point-in-time backups; monthly restore test; rebuild from Compose + backup in under an hour; Cloudflare cache keeps pages readable during short outages |
+| File storage costs | R2 has no egress fees; zstd-compressed raw files and content-addressed dedupe keep storage down; measure total size in the spikes |
 | Vendor lock-in on storage | S3 API only behind the `blobstore` interface; moving providers is `rclone sync` + a config change |
 
 ---
 
 ## 9. Immediate next steps
-1. Approve the single-VPS Go architecture (§2). Choose the VPS provider and size (see §2.4).
+1. Approve the single-VPS Go architecture (§2). Choose the VPS provider and size (see §2.4). Storage: Cloudflare R2 (decided).
 2. Phase 0: scaffold the repo and the two-service Compose file; provision the VPS, the files bucket and the backup bucket, and set up wal-g.
 3. Run the two spikes: the ELI API and EUREKA endpoint mapping. Record the findings in `docs/sources/`.
 4. Add a third spike: CBOSA page structure and SAOS freshness/dump format. Also benchmark Postgres FTS with the Polish dictionary on a large sample of rulings.
