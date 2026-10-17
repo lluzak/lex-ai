@@ -1,0 +1,42 @@
+{{define "act.html"}}<article class="doc act" data-doc="{{.Doc.ID}}">
+  <header class="doc-head">
+    <p class="doc-meta">
+      <span class="badge">{{.Doc.ActType}}</span>
+      {{if .Doc.Status}}<span class="badge status">{{.Doc.Status}}</span>{{end}}
+      <span>{{.Doc.DisplayAddress}}</span>
+    </p>
+    <h1>{{.Doc.Title}}</h1>
+    <dl class="doc-dates">
+      {{with .Doc.PublishedAt}}<dt>Ogłoszono</dt><dd>{{date .}}</dd>{{end}}
+      {{with .Doc.InForceFrom}}<dt>Wejście w życie</dt><dd>{{date .}}</dd>{{end}}
+    </dl>
+    <p class="doc-links">
+      <a href="{{.SourceURL}}" rel="noopener">Źródło (ISAP)</a>
+      {{if .PDFURL}} · <a href="{{.PDFURL}}">PDF</a>{{end}}
+    </p>
+    {{if .Keywords}}<ul class="keywords">{{range .Keywords}}<li>{{.}}</li>{{end}}</ul>{{end}}
+  </header>
+
+  {{if .TOC}}
+  <details class="toc"><summary>Spis treści</summary>
+    <ol>{{range .TOC}}
+      <li class="toc-{{.Type}}"><a href="#{{.Path}}">{{label .Type .Number}}{{if .Heading}} {{.Heading}}{{end}}</a></li>{{end}}
+    </ol>
+  </details>
+  {{end}}
+
+  <div class="doc-body">
+    {{range .Units}}{{if isHeading .Type}}
+    <h2 class="u u-{{.Type}}" id="{{.Path}}">{{label .Type .Number}}{{if .Heading}}<span class="u-heading">{{.Heading}}</span>{{end}}</h2>
+    {{else}}
+    <p class="u u-{{.Type}} d{{.Depth}}" id="{{.Path}}"><a class="u-label" href="#{{.Path}}">{{label .Type .Number}}</a> {{.Text}}</p>
+    {{end}}{{else}}
+    <p class="empty">Tekst aktu nie został jeszcze przetworzony. Skorzystaj z linku do źródła.</p>
+    {{end}}
+  </div>
+
+  <section class="related" hx-get="/fragments/relations?doc={{.Doc.ID}}" hx-trigger="load" hx-swap="innerHTML">
+    <h2>Powiązane akty</h2>
+    <p class="loading">Wczytywanie…</p>
+  </section>
+</article>{{end}}

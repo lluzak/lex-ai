@@ -1,0 +1,6 @@
+/var/
+/lexai
+.env
+/certs/
+deploy/tsearch_data/*
+!deploy/tsearch_data/.gitkeep

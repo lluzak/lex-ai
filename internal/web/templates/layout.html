@@ -1,0 +1,28 @@
+{{define "layout"}}<!doctype html>
+<html lang="pl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{if .Title}}{{.Title}} · {{end}}lex-ai</title>
+{{with .Description}}<meta name="description" content="{{.}}">{{end}}
+{{with .Canonical}}<link rel="canonical" href="{{.}}">{{end}}
+<link rel="stylesheet" href="{{asset "app.css"}}">
+<script src="{{asset "htmx.min.js"}}" defer></script>
+</head>
+<body>
+<header class="site">
+  <a class="brand" href="/">lex-ai</a>
+  {{if not .Home}}
+  <form action="/search" method="get" role="search">
+    <input type="search" name="q" value="{{.Query}}" placeholder="Szukaj w aktach prawnych…" aria-label="Szukaj">
+  </form>
+  {{end}}
+</header>
+<main>
+{{.Body}}
+</main>
+<footer class="site">
+  Teksty aktów pochodzą z Dziennika Ustaw i Monitora Polskiego (API ELI Sejmu RP). Wersja nieurzędowa — wiążący jest tekst ogłoszony w dzienniku urzędowym.
+</footer>
+</body>
+</html>{{end}}

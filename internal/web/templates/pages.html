@@ -1,0 +1,80 @@
+{{define "home"}}
+<section class="hero">
+  <h1>Prawo polskie w jednym miejscu</h1>
+  <p>Akty prawne z Dziennika Ustaw i Monitora Polskiego. Wkrótce: interpretacje podatkowe (EUREKA) i orzecznictwo.</p>
+  <form action="/search" method="get" role="search">
+    <input type="search" name="q" autofocus placeholder="np. ulga na złe długi, Dz.U. 2024 poz. 1, art. 415 k.c."
+           aria-label="Szukaj"
+           hx-get="/search" hx-trigger="input changed delay:250ms, search" hx-target="#results"
+           hx-push-url="true" hx-indicator="#spinner">
+  </form>
+  <p class="examples">Możesz wpisać adres publikacji (<a href="/search?q=Dz.U.+2024+poz.+1">Dz.U. 2024 poz. 1</a>)
+  lub przepis (<a href="/search?q=art.+415+k.c.">art. 415 k.c.</a>), aby przejść bezpośrednio do aktu.
+  <span id="spinner" class="htmx-indicator">Szukam…</span></p>
+</section>
+<div id="results"></div>
+{{end}}
+
+{{define "search"}}
+<form class="filters" action="/search" method="get" hx-get="/search" hx-target="#results" hx-push-url="true"
+      hx-trigger="change, submit" hx-indicator="#spinner">
+  <input type="hidden" name="q" value="{{.Query.Text}}">
+  <label>Dziennik
+    <select name="pub">
+      <option value="">wszystkie</option>
+      <option value="DU" {{if eq .Query.Publisher "DU"}}selected{{end}}>Dziennik Ustaw</option>
+      <option value="MP" {{if eq .Query.Publisher "MP"}}selected{{end}}>Monitor Polski</option>
+    </select>
+  </label>
+  <label>od <select name="from">{{template "years" (yearOpts .Query.YearFrom)}}</select></label>
+  <label>do <select name="to">{{template "years" (yearOpts .Query.YearTo)}}</select></label>
+  <span id="spinner" class="htmx-indicator">Szukam…</span>
+</form>
+<div id="results">{{template "results" .}}</div>
+{{end}}
+
+{{define "years"}}<option value="">—</option>{{range .}}<option value="{{.Year}}" {{if .Selected}}selected{{end}}>{{.Year}}</option>{{end}}{{end}}
+
+{{define "results"}}
+{{with .Lookup}}<p class="lookup">Przejdź do: <a href="{{.URL}}">{{.Label}}</a></p>{{end}}
+{{if .Query.Text}}
+  {{if .Hits}}
+  <ul class="results">
+    {{range .Hits}}
+    <li>
+      <a class="title" href="{{actURL .ELI .Path}}">{{.Title}}</a>
+      <div class="meta">{{.DisplayAddress}}{{with .ActType}} · {{.}}{{end}}{{with .Status}} · {{.}}{{end}}{{with .Path}} · {{pathLabel .}}{{end}}</div>
+      {{with .Snippet}}<p class="snippet">{{.}}</p>{{end}}
+    </li>
+    {{end}}
+  </ul>
+  {{if .NextURL}}
+  <p><a href="{{.NextURL}}" hx-get="{{.NextURL}}" hx-target="#results" hx-push-url="true">Następne wyniki →</a></p>
+  {{end}}
+  {{else}}
+  <p class="empty">Brak wyników dla „{{.Query.Text}}”.</p>
+  {{end}}
+{{end}}
+{{end}}
+
+{{define "relations"}}
+<h2>Powiązane akty</h2>
+{{if .}}
+  {{range .}}
+  <h3>{{.Type}}</h3>
+  <ul>{{range .Items}}
+    <li><a href="{{actURL .ExternalID ""}}">{{if .DisplayAddr}}{{.DisplayAddr}}{{else}}{{.ExternalID}}{{end}}</a>{{with .Title}} — {{.}}{{end}}</li>{{end}}
+  </ul>
+  {{end}}
+{{else}}
+  <p class="empty">Brak powiązań.</p>
+{{end}}
+{{end}}
+
+{{define "notfound"}}
+<section class="hero">
+  <h1>Nie znaleziono</h1>
+  <p>{{.}}</p>
+  <p><a href="/">Wróć do wyszukiwania</a></p>
+</section>
+{{end}}

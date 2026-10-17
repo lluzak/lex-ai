@@ -1,0 +1,61 @@
+# Production layout: exactly two services. Files live in Cloudflare R2,
+# backups go to a separate bucket (see docs/deploy.md).
+#
+#   cp .env.example .env   # fill in R2 credentials and domain
+#   docker compose up -d
+#
+# For development you only need Postgres:  docker compose up -d postgres
+services:
+  postgres:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: lexai
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-lexai}
+      POSTGRES_DB: lexai
+    # Defaults suit a small machine. On the planned 32 GB VPS set
+    # PG_SHARED_BUFFERS=8GB and PG_EFFECTIVE_CACHE_SIZE=22GB in .env.
+    command:
+      - postgres
+      - -c
+      - shared_buffers=${PG_SHARED_BUFFERS:-1GB}
+      - -c
+      - effective_cache_size=${PG_EFFECTIVE_CACHE_SIZE:-3GB}
+      - -c
+      - work_mem=32MB
+      - -c
+      - maintenance_work_mem=1GB
+      - -c
+      - max_wal_size=8GB
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      # Polish dictionary files (see docs/search.md). Uncomment once the files exist,
+      # otherwise Docker creates empty directories in their place.
+      # - ./deploy/tsearch_data/polish.dict:/usr/share/postgresql/16/tsearch_data/polish.dict:ro
+      # - ./deploy/tsearch_data/polish.affix:/usr/share/postgresql/16/tsearch_data/polish.affix:ro
+      # - ./deploy/tsearch_data/polish.stop:/usr/share/postgresql/16/tsearch_data/polish.stop:ro
+    ports:
+      - "127.0.0.1:5432:5432" # localhost only
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U lexai"]
+      interval: 5s
+      retries: 10
+
+  lexai:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file: .env
+    environment:
+      DATABASE_URL: postgres://lexai:${POSTGRES_PASSWORD:-lexai}@postgres:5432/lexai?sslmode=disable
+      LEXAI_ADDR: ":8443"
+    entrypoint: ["sh", "-c", "lexai migrate && exec lexai serve"]
+    volumes:
+      - ./certs:/certs:ro # Cloudflare Origin CA certificate + key
+    ports:
+      - "443:8443"
+
+volumes:
+  pgdata:

@@ -1,0 +1,90 @@
+:root {
+  --bg: #fbfaf7;
+  --fg: #1d1d1b;
+  --muted: #6b6a66;
+  --line: #e4e1da;
+  --accent: #1f4e79;
+  --accent-soft: #e8eef5;
+  --mark: #fff1a8;
+  --badge: #efece6;
+  --max: 52rem;
+  color-scheme: light dark;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #161615;
+    --fg: #e8e6e1;
+    --muted: #9c9a94;
+    --line: #2e2d2a;
+    --accent: #8db8e2;
+    --accent-soft: #1d2a37;
+    --mark: #5a4d00;
+    --badge: #262523;
+  }
+}
+* { box-sizing: border-box; }
+html { font-size: 17px; }
+body {
+  margin: 0; background: var(--bg); color: var(--fg);
+  font: 1rem/1.6 Georgia, "Iowan Old Style", "Times New Roman", serif;
+}
+a { color: var(--accent); text-decoration-thickness: 1px; text-underline-offset: 2px; }
+header.site, main, footer.site { max-width: var(--max); margin: 0 auto; padding: 0 1rem; }
+header.site { display: flex; gap: 1rem; align-items: center; padding-top: 1rem; padding-bottom: 1rem; border-bottom: 1px solid var(--line); }
+header.site .brand { font-weight: bold; text-decoration: none; color: var(--fg); font-size: 1.15rem; }
+header.site form { flex: 1; }
+footer.site { color: var(--muted); font-size: .85rem; padding-top: 2rem; padding-bottom: 2rem; border-top: 1px solid var(--line); margin-top: 3rem; }
+input[type=search], select {
+  font: inherit; width: 100%; padding: .5rem .75rem; border: 1px solid var(--line);
+  border-radius: 6px; background: var(--bg); color: var(--fg);
+}
+select { width: auto; font-size: .9rem; padding: .3rem .5rem; }
+.hero { padding: 3rem 0 1rem; }
+.hero h1 { font-size: 1.8rem; margin: 0 0 .5rem; }
+.hero p { color: var(--muted); margin: 0 0 1.5rem; }
+.hero input[type=search] { font-size: 1.15rem; padding: .75rem 1rem; }
+.examples { font-size: .9rem; color: var(--muted); }
+.filters { display: flex; flex-wrap: wrap; gap: .5rem; margin: .75rem 0; align-items: center; }
+.filters label { font-size: .85rem; color: var(--muted); }
+.results { list-style: none; padding: 0; margin: 1rem 0; }
+.results li { padding: .9rem 0; border-bottom: 1px solid var(--line); }
+.results .title { font-size: 1.05rem; }
+.results .meta, .doc-meta { font-size: .85rem; color: var(--muted); }
+.results .snippet { margin: .3rem 0 0; font-size: .95rem; }
+mark { background: var(--mark); color: inherit; padding: 0 .1em; }
+.badge { display: inline-block; background: var(--badge); border-radius: 4px; padding: 0 .4rem; margin-right: .35rem; font-size: .8rem; }
+.badge.status { background: var(--accent-soft); color: var(--accent); }
+.htmx-indicator { opacity: 0; transition: opacity .2s; color: var(--muted); font-size: .85rem; }
+.htmx-request .htmx-indicator, .htmx-request.htmx-indicator { opacity: 1; }
+.doc h1 { font-size: 1.45rem; line-height: 1.3; margin: .3rem 0 .6rem; }
+.doc-dates { display: grid; grid-template-columns: max-content 1fr; gap: 0 1rem; font-size: .9rem; margin: 0 0 .5rem; }
+.doc-dates dt { color: var(--muted); }
+.doc-dates dd { margin: 0; }
+.doc-links { font-size: .9rem; }
+.keywords { list-style: none; padding: 0; display: flex; flex-wrap: wrap; gap: .3rem; }
+.keywords li { background: var(--badge); border-radius: 4px; padding: 0 .45rem; font-size: .8rem; }
+.toc { margin: 1.5rem 0; border: 1px solid var(--line); border-radius: 6px; padding: .5rem 1rem; }
+.toc summary { cursor: pointer; font-weight: bold; }
+.toc ol { list-style: none; padding: 0; columns: 2; font-size: .9rem; }
+.toc li { break-inside: avoid; }
+.toc .toc-rozdzial, .toc .toc-dzial, .toc .toc-ksiega, .toc .toc-tytul, .toc .toc-czesc { font-weight: bold; margin-top: .4rem; }
+.doc-body { margin-top: 1.5rem; }
+.doc-body h2.u { font-size: 1.05rem; text-align: center; margin: 2rem 0 1rem; }
+.doc-body h2 .u-heading { display: block; font-weight: normal; }
+.doc-body p.u { margin: .35rem 0; }
+.doc-body .u-art, .doc-body .u-par.d0 { margin-top: 1rem; }
+.doc-body .u-label { font-weight: bold; text-decoration: none; color: var(--fg); }
+.doc-body .d1 { padding-left: 1.2rem; } .doc-body .d2 { padding-left: 2.4rem; }
+.doc-body .d3 { padding-left: 3.6rem; } .doc-body .d4 { padding-left: 4.8rem; }
+.doc-body .d5 { padding-left: 6rem; } .doc-body .d6, .doc-body .d7, .doc-body .d8 { padding-left: 7.2rem; }
+.doc-body :target { background: var(--accent-soft); border-radius: 4px; }
+.related { margin-top: 2.5rem; border-top: 1px solid var(--line); }
+.related h2 { font-size: 1.1rem; }
+.related h3 { font-size: .95rem; margin-bottom: .2rem; }
+.related ul { padding-left: 1.2rem; font-size: .9rem; }
+.empty, .loading { color: var(--muted); }
+@media (max-width: 40rem) {
+  html { font-size: 16px; }
+  .toc ol { columns: 1; }
+  header.site { flex-wrap: wrap; }
+}

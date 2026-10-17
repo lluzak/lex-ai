@@ -44,7 +44,7 @@ The model stores this weight explicitly (§4) so that search and AI can rank a 7
    - An **S3-compatible bucket** holds files: raw downloads, original PDFs, attachments, OCR outputs and backups. **Chosen provider: Cloudflare R2** (zero egress fees, S3-compatible endpoint `https://<account_id>.r2.cloudflarestorage.com`, region `auto`). It's a managed service, not something we run on the VPS. The code uses the S3 API only, so we can still switch provider with a config change.
 3. **The workload shape is "big once, then small".** The history backfill is a one-off job measured in days, limited by polite request rates to government sites. After it, the daily delta is a small trickle of documents, and the server is mostly idle and fast for readers.
 4. **Precompute, don't compute per request.** Legal texts rarely change after publication. When a document is ingested, its final HTML is rendered once and stored in Postgres. A page view is one primary-key lookup plus an in-memory cache.
-5. **Boring, explicit Go.** Standard library first, generated SQL (sqlc), no ORM, no framework. A new developer can read the whole request path in an afternoon.
+5. **Boring, explicit Go.** Standard library first, plain SQL through pgx, no ORM, no framework. A new developer can read the whole request path in an afternoon.
 6. **Idempotency everywhere.** Every write is keyed by `(source, external_id, content_hash)`. Re-runs and retries are always safe.
 
 ### 2.2 System overview
@@ -55,7 +55,7 @@ The model stores this weight explicitly (§4) so that search and AI can rank a 7
  browser ─ HTTPS ──▶ │  lexai  (single Go binary)                                               │
  (HTML + htmx)       │   ├─ HTTPS: autocert (Let's Encrypt), HTTP/2, gzip/brotli                │
                      │   ├─ web:   document pages (pre-rendered HTML from Postgres + RAM cache) │
-                     │   │         search page + htmx fragments (templ)                         │
+                     │   │         search page + htmx fragments (html/template)                 │
                      │   │         static assets embedded in the binary (go:embed)              │
                      │   ├─ JSON API  ·  /mcp (Phase 4)                                          │
                      │   ├─ workers: River jobs  fetch → extract → parse → link → render → embed │
@@ -86,10 +86,10 @@ The model stores this weight explicitly (§4) so that search and AI can rank a 7
 | Language | **Go 1.23+**: one binary | Web, API, workers, scheduler, crawlers, parsers, MCP |
 | HTTPS | Site behind **Cloudflare proxy** (same account as R2). Origin uses a **Cloudflare Origin CA certificate** loaded by the binary; firewall accepts 443 only from Cloudflare IP ranges | No Caddy/nginx, no certificate renewal on the box. `autocert` (Let's Encrypt) remains as a fallback when running without Cloudflare |
 | HTTP | `net/http` + **chi**, gzip/brotli middleware | HTTP/2 built in |
-| HTML | **templ** (type-safe Go templates) | Server-rendered; compiled into the binary |
+| HTML | Standard library `html/template`, templates embedded with `go:embed` | Server-rendered, auto-escaped, no code generation step |
 | Interactivity | **htmx** (vendored, pinned version), embedded with `go:embed` | Live search, filters, tabs, "load more". Pages work without JS |
 | CSS | One hand-written stylesheet, embedded | No toolchain |
-| DB access | **pgx v5** + **sqlc**, migrations with **goose** (embedded, run by `lexai migrate`) | |
+| DB access | **pgx v5** with hand-written SQL in `internal/store`, migrations with **goose** (embedded, run by `lexai migrate`) | No codegen tool to install; sqlc can be added later if the query count grows |
 | Jobs + scheduling | **River** (`riverqueue/river`) on Postgres | A job is enqueued in the same transaction as the data that triggers it. River UI is mounted as an admin page inside the binary |
 | Full-text search | **Postgres FTS** with a **Polish ispell/hunspell dictionary** (e.g. sjp.pl) + **pg_trgm** + `unaccent` | Stored weighted `tsvector` columns with GIN indexes |
 | Files | **Cloudflare R2** (S3 API) through a small `blobstore` interface: S3 implementation (`minio-go` or `aws-sdk-go-v2`, any endpoint) and a local-disk implementation for development and tests | Content-addressed keys `raw/sha256/ab/cd/<hash>.zst`; Postgres stores only key, hash, size and type. Deduplicated automatically |
@@ -126,7 +126,7 @@ The model stores this weight explicitly (§4) so that search and AI can rank a 7
 
 ### 2.6 Frontend: server-rendered HTML + htmx
 
-- **Document pages** (`/akt/DU/1964/16`, `/orzeczenie/II-FSK-1234-21`, `/interpretacja/…`): Go returns `rendered_html` from RAM or Postgres, with `ETag` and long cache headers. Historical versions have stable URLs (`/akt/DU/1964/16@2025-01-01`) and are cacheable forever.
+- **Document pages** (`/akt/DU/1964/93`, `/orzeczenie/II-FSK-1234-21`, `/interpretacja/…`): Go returns `rendered_html` from RAM or Postgres, with `ETag` and long cache headers. Historical versions have stable URLs (`/akt/DU/1964/93@2025-01-01`) and are cacheable forever.
 - **Dynamic parts as htmx fragments:**
   - `hx-get="/fragments/case-law?unit=…"` for the "Case law" tab;
   - "interpretations citing this article";
@@ -170,10 +170,10 @@ internal/
   jobs/                 River job kinds: fetch, extract, parse, link, render, index, embed
   parse/                act structure parser, ruling sections, interpretation sections
   citation/             "art. 15 ust. 1 ustawy o CIT" → act_unit resolver (shared by all sources)
-  render/               templ components for document pages → rendered_html
+  render/               html/template pages for documents → rendered_html
   web/                  handlers: pages, search, htmx fragments, redirects, admin
   api/                  JSON API
-  store/                sqlc queries + embedded goose migrations
+  store/                pgx queries (migrations live in internal/db)
   search/               search.Engine interface + Postgres FTS implementation
   blobstore/            Store interface: Put/Get/Exists/PresignGet; s3 (any endpoint) + localfs (dev/tests)
   ai/                   (Phase 4) chunking, embeddings, retrieval, RAG, MCP tools
@@ -283,7 +283,7 @@ Polish law is published as amendments. A consolidated text (*tekst jednolity*) i
 **MVP features**
 - Global search across acts and interpretations, with filters: document type, publisher, year, status (in force / repealed), tax type, issuer, date range.
 - Look up an act by citation: "Dz.U. 2024 poz. 1", ELI id, or common name ("ustawa o VAT", "KC", "KPA"). Maintain an alias table for common names.
-- Act reader: table of contents tree, deep links to articles (`/akt/DU/1964/16#art.415`), status badge, version timeline, related acts, "interpretations citing this article".
+- Act reader: table of contents tree, deep links to articles (`/akt/DU/1964/93#art.415`), status badge, version timeline, related acts, "interpretations citing this article".
 - Interpretation reader: sections, cited provisions (linked), similar interpretations, **court outcome** if it was challenged.
 - Ruling reader: thesis, operative part, reasoning, dissent, cited provisions (linked), instance chain (earlier and later rulings in the same case), badge for binding force.
 - Article page tab **"Case law"**: rulings citing this article, filterable by court and date, with uchwały and TK judgments pinned on top.
@@ -318,7 +318,7 @@ Polish law is published as amendments. A consolidated text (*tekst jednolity*) i
 
 | Phase | Duration (1–2 devs) | Deliverables |
 |-------|---------------------|--------------|
-| **0. Foundations** | 1 week | Go monorepo (§2.9), Postgres with the Polish FTS dictionary, goose migrations, sqlc, River job pipeline skeleton, templ + htmx base layout with embedded assets, Cloudflare origin TLS, two-service Docker Compose, CI (`go vet`, `golangci-lint`, tests), connector interface, VPS provisioning + backups |
+| **0. Foundations** | 1 week | Go monorepo (§2.9), Postgres with the Polish FTS dictionary, goose migrations, River job pipeline skeleton, html/template + htmx base layout with embedded assets, Cloudflare origin TLS, two-service Docker Compose, CI (`go vet`, `golangci-lint`, tests), connector interface, VPS provisioning + backups |
 | **0.5 Spikes** | 3–5 days | (a) ELI API: confirm endpoints, the change feed, HTML coverage by year. (b) EUREKA: map the internal JSON API, measure volume, check terms. (c) CBOSA page structure, SAOS freshness and dump format. (d) A structure parser prototype on 20 representative acts |
 | **1. Acts MVP** | 3–4 weeks | Full DU+MP backfill, structure parsing, relations, daily delta, Postgres FTS, static act pages, search page with htmx, JSON API |
 | **1b. EUREKA MVP** | 2–3 weeks (can run in parallel) | EUREKA connector, backfill, section parsing, citation extraction and linking to articles, UI for interpretations |
@@ -352,7 +352,32 @@ Polish law is published as amendments. A consolidated text (*tekst jednolity*) i
 
 ---
 
-## 9. Immediate next steps
+## 9. Progress
+
+**Done (first implementation):**
+- Phase 0 foundations: Go module, config, goose + River migrations, Docker Compose (two services), Dockerfile, CI.
+- Phase 1 core:
+  - Sejm ELI connector;
+  - River pipeline (delta → list → fetch → parse → render);
+  - act structure parser;
+  - citation and lookup parsers;
+  - Postgres FTS search;
+  - pre-rendered act pages, htmx live search, relations fragment, JSON API;
+  - blob storage on R2 or local disk;
+  - an end-to-end test.
+
+See README.md for the current state.
+
+**Not yet done:**
+- Run the ELI spike against the live API. The connector's field names are unconfirmed (docs/sources/sejm-eli.md).
+- Install the Polish dictionary on the server (docs/search.md).
+- wal-g backups.
+- OCR.
+- Linking citations into documents.
+- Version timeline.
+- EUREKA, rulings, AI.
+
+## 10. Immediate next steps
 1. Approve the single-VPS Go architecture (§2). Choose the VPS provider and size (see §2.4). Storage: Cloudflare R2 (decided).
 2. Phase 0: scaffold the repo and the two-service Compose file; provision the VPS, the files bucket and the backup bucket, and set up wal-g.
 3. Run the two spikes: the ELI API and EUREKA endpoint mapping. Record the findings in `docs/sources/`.

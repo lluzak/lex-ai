@@ -1,0 +1,29 @@
+name: ci
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: lexai
+          POSTGRES_PASSWORD: lexai
+          POSTGRES_DB: lexai_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U lexai" --health-interval 5s --health-retries 10
+    env:
+      LEXAI_TEST_DATABASE_URL: postgres://lexai:lexai@localhost:5432/lexai_test?sslmode=disable
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: gofmt
+        run: test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
+      - run: go vet ./...
+      - run: go test -race ./...

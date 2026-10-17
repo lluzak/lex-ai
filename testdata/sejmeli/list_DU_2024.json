@@ -1,0 +1,14 @@
+{
+  "count": 2,
+  "totalCount": 2,
+  "items": [
+    {"ELI": "DU/2024/1", "address": "WDU20240000001", "publisher": "DU", "year": 2024, "pos": 1,
+     "type": "Ustawa", "title": "Ustawa z dnia 10 stycznia 2024 r. o zmianie ustawy o podatku od towarów i usług",
+     "displayAddress": "Dz.U. 2024 poz. 1", "status": "obowiązujący", "promulgation": "2024-01-10",
+     "announcementDate": "2024-01-12", "changeDate": "2024-02-01T10:00:00", "textHTML": true, "textPDF": false},
+    {"ELI": "DU/2024/2", "address": "WDU20240000002", "publisher": "DU", "year": 2024, "pos": 2,
+     "type": "Obwieszczenie", "title": "Obwieszczenie bez tekstu w API",
+     "displayAddress": "Dz.U. 2024 poz. 2", "status": "akt jednorazowy", "promulgation": "2024-01-11",
+     "announcementDate": "2024-01-12", "changeDate": "2024-01-12T08:00:00", "textHTML": false, "textPDF": false}
+  ]
+}
