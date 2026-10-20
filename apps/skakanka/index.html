@@ -1,0 +1,606 @@
+<!doctype html>
+<html lang="pl">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Skakanka HIIT</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700;800&family=Archivo:wght@400;500;600&display=swap">
+<style>
+/* Layout: one narrow column. Plan picker and timeline at rest; while training, a full-width phase-colored panel with huge digits. */
+:root {
+  --bg: #f2f4f8;
+  --surface: #ffffff;
+  --ink: #141a2c;
+  --muted: #5a6378;
+  --line: #d8dde8;
+  --accent: #2545d3;
+  --on-accent: #ffffff;
+  /* phase colors: painted as backgrounds under white text, same in both themes */
+  --ph-prep: #2545d3;
+  --ph-work: #d73a2e;
+  --ph-rest: #0d7d6c;
+  --ph-set: #4b3fb8;
+  --ph-warm: #a8650a;
+  --ph-cool: #3a6d93;
+  --ph-done: #1d2438;
+  --font-display: "Barlow Condensed", "Arial Narrow", "Roboto Condensed", system-ui, sans-serif;
+  --font-body: "Archivo", system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0d1120; --surface: #161b2e; --ink: #edf0f8; --muted: #9ca5bb; --line: #283049;
+    --accent: #7d93ff; --on-accent: #0d1120; --ph-done: #232b45; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0d1120; --surface: #161b2e; --ink: #edf0f8; --muted: #9ca5bb; --line: #283049;
+  --accent: #7d93ff; --on-accent: #0d1120; --ph-done: #232b45; color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+html, body { min-height: 100%; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font: 400 15px/1.5 var(--font-body);
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 20px 40px;
+}
+.wrap { max-width: 720px; margin: 0 auto; display: grid; gap: 24px; }
+h1, h2, h3 { font-family: var(--font-display); text-wrap: balance; margin: 0; letter-spacing: 0.01em; }
+h1 { font-size: 2.6rem; font-weight: 800; line-height: 1; text-transform: uppercase; }
+h1 span { color: var(--accent); }
+h2 { font-size: 1.35rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; }
+.lede { color: var(--muted); margin: 6px 0 0; max-width: 60ch; }
+.eyebrow { font: 600 0.72rem/1 var(--font-body); text-transform: uppercase; letter-spacing: 0.12em; color: var(--muted); }
+button, input, select { font: inherit; color: inherit; }
+button { cursor: pointer; }
+:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+.num { font-variant-numeric: tabular-nums; }
+
+/* plan picker */
+.plans { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px; }
+.plan {
+  text-align: left; background: var(--surface); border: 1.5px solid var(--line); border-radius: 10px;
+  padding: 14px; display: grid; gap: 6px; align-content: start;
+}
+.plan[aria-pressed="true"] { border-color: var(--accent); box-shadow: inset 0 0 0 1.5px var(--accent); }
+.plan strong { font: 700 1.3rem/1.1 var(--font-display); text-transform: uppercase; }
+.plan .meta { color: var(--muted); font-size: 0.85rem; }
+.plan .total { font: 700 1.05rem/1 var(--font-display); color: var(--accent); }
+
+/* timeline strip */
+.strip { display: flex; height: 18px; border-radius: 4px; overflow: hidden; gap: 1px; background: var(--line); }
+.strip i { display: block; min-width: 1px; }
+.t-prep { background: var(--ph-prep); } .t-work { background: var(--ph-work); } .t-rest { background: var(--ph-rest); }
+.t-set { background: var(--ph-set); } .t-warm { background: var(--ph-warm); } .t-cool { background: var(--ph-cool); }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 0.8rem; color: var(--muted); }
+.legend span { display: inline-flex; align-items: center; gap: 6px; }
+.legend b { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
+
+.summary { display: grid; gap: 12px; }
+.facts { display: flex; flex-wrap: wrap; gap: 8px 22px; }
+.facts div { display: grid; }
+.facts dd { margin: 0; font: 700 1.6rem/1.1 var(--font-display); }
+.facts dt { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.1em; color: var(--muted); }
+
+.exlist { list-style: none; margin: 0; padding: 0; display: grid; gap: 1px; background: var(--line); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+.exlist li { background: var(--surface); padding: 12px 14px; display: grid; grid-template-columns: 2.2rem 1fr; gap: 2px 10px; }
+.exlist .n { font: 800 1.4rem/1 var(--font-display); color: var(--ph-work); grid-row: span 2; }
+.exlist b { font-weight: 600; }
+.exlist small { color: var(--muted); grid-column: 2; }
+.exlist em { font-style: normal; color: var(--muted); font-size: 0.8rem; }
+
+/* custom form */
+.custom { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 16px; display: grid; gap: 14px; }
+.fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 12px; }
+.fields label { display: grid; gap: 4px; font-size: 0.8rem; color: var(--muted); }
+.fields input { padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); width: 100%; }
+.checks { display: flex; flex-wrap: wrap; gap: 8px; }
+.checks label, .toggles label {
+  display: inline-flex; align-items: center; gap: 6px; padding: 6px 10px; border: 1px solid var(--line);
+  border-radius: 999px; font-size: 0.85rem; background: var(--bg); cursor: pointer;
+}
+
+/* sound */
+.sound { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.toggles { display: flex; flex-wrap: wrap; gap: 8px; }
+.vol { display: inline-flex; align-items: center; gap: 8px; font-size: 0.85rem; color: var(--muted); }
+.vol input { width: 120px; accent-color: var(--accent); }
+
+.btn {
+  border: 1.5px solid var(--line); background: var(--surface); border-radius: 8px; padding: 10px 14px;
+  font-weight: 600;
+}
+.btn.primary {
+  background: var(--accent); color: var(--on-accent); border-color: var(--accent);
+  font: 800 1.6rem/1 var(--font-display); text-transform: uppercase; letter-spacing: 0.06em; padding: 18px; width: 100%;
+}
+.tips { color: var(--muted); font-size: 0.88rem; margin: 0; padding-left: 1.1rem; display: grid; gap: 4px; }
+
+/* runner */
+.runner {
+  position: fixed; inset: 0; z-index: 20; color: #fff; background: var(--ph-prep);
+  display: grid; grid-template-rows: auto 1fr auto; transition: background-color 0.35s ease;
+  padding-top: calc(14px + env(safe-area-inset-top, 0px));
+  padding-bottom: calc(18px + env(safe-area-inset-bottom, 0px));
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+}
+.runner.p-work { background: var(--ph-work); } .runner.p-rest { background: var(--ph-rest); }
+.runner.p-set { background: var(--ph-set); } .runner.p-warm { background: var(--ph-warm); }
+.runner.p-cool { background: var(--ph-cool); } .runner.p-done { background: var(--ph-done); }
+.runner.paused .clock { opacity: 0.55; }
+.r-top { display: flex; justify-content: space-between; align-items: center; gap: 12px; font-size: 0.85rem; max-width: 720px; width: 100%; margin: 0 auto; }
+.r-top .ghost { background: rgba(255,255,255,0.14); border: 0; color: #fff; padding: 8px 12px; border-radius: 6px; font-weight: 600; }
+.r-mid { display: grid; align-content: center; justify-items: center; text-align: center; gap: 8px; min-height: 0; }
+.phase { font: 800 1.3rem/1 var(--font-display); letter-spacing: 0.22em; text-transform: uppercase; opacity: 0.9; }
+.exname { font: 800 clamp(2rem, 8vw, 3.6rem)/1 var(--font-display); text-transform: uppercase; text-wrap: balance; }
+.cue { max-width: 36ch; opacity: 0.9; margin: 0; min-height: 3em; }
+.clock { font: 800 clamp(7rem, 34vw, 15rem)/0.9 var(--font-display); font-variant-numeric: tabular-nums; letter-spacing: -0.01em; }
+.nextup { font-size: 1rem; opacity: 0.92; min-height: 1.5em; }
+.nextup b { font-weight: 600; }
+.r-bot { display: grid; gap: 12px; max-width: 720px; width: 100%; margin: 0 auto; }
+.bar { height: 8px; background: rgba(255,255,255,0.22); border-radius: 4px; overflow: hidden; }
+.bar i { display: block; height: 100%; background: #fff; width: 0; }
+.bar.thin { height: 4px; }
+.r-stats { display: flex; justify-content: space-between; font-size: 0.85rem; opacity: 0.9; gap: 10px; flex-wrap: wrap; }
+.ctrls { display: grid; grid-template-columns: 1fr 1.6fr 1fr; gap: 10px; }
+.ctrls button {
+  border: 0; border-radius: 10px; padding: 16px 8px; font: 700 1.15rem/1 var(--font-display); text-transform: uppercase; letter-spacing: 0.08em;
+  background: rgba(255,255,255,0.16); color: #fff;
+}
+.ctrls .main { background: #fff; color: #141a2c; font-size: 1.4rem; }
+.done-panel { display: grid; gap: 14px; justify-items: center; text-align: center; }
+
+@media (prefers-reduced-motion: reduce) { .runner { transition: none; } }
+</style>
+
+<div class="wrap" id="setup">
+  <header>
+    <div class="eyebrow">Interwały ze skakanką</div>
+    <h1>Skakanka <span>HIIT</span></h1>
+    <p class="lede">Wybierz trening, włącz dźwięk i skacz. Sygnał 3-2-1 przed każdą zmianą, wysoki ton na start pracy, niski na odpoczynek.</p>
+  </header>
+
+  <section aria-labelledby="h-plan" style="display:grid;gap:12px">
+    <h2 id="h-plan">Trening</h2>
+    <div class="plans" id="plans"></div>
+  </section>
+
+  <section class="custom" id="custom" hidden aria-label="Ustawienia własnego treningu">
+    <div class="fields">
+      <label for="c-work">Praca (s)<input id="c-work" type="number" min="5" max="600" step="5" value="30"></label>
+      <label for="c-rest">Odpoczynek (s)<input id="c-rest" type="number" min="0" max="600" step="5" value="30"></label>
+      <label for="c-sets">Serie<input id="c-sets" type="number" min="1" max="20" value="3"></label>
+      <label for="c-setrest">Przerwa między seriami (s)<input id="c-setrest" type="number" min="0" max="600" step="5" value="60"></label>
+    </div>
+    <div style="display:grid;gap:6px">
+      <span class="eyebrow">Ćwiczenia w serii</span>
+      <div class="checks" id="c-ex"></div>
+    </div>
+    <div class="toggles">
+      <label for="c-warm"><input id="c-warm" type="checkbox" checked> Rozgrzewka 5 min</label>
+      <label for="c-cool"><input id="c-cool" type="checkbox" checked> Schłodzenie 5 min</label>
+    </div>
+  </section>
+
+  <section class="summary" aria-labelledby="h-sum">
+    <h2 id="h-sum">Przebieg</h2>
+    <dl class="facts" id="facts"></dl>
+    <div class="strip" id="strip" aria-hidden="true"></div>
+    <div class="legend">
+      <span><b class="t-warm"></b>Rozgrzewka</span><span><b class="t-work"></b>Praca</span>
+      <span><b class="t-rest"></b>Odpoczynek</span><span><b class="t-set"></b>Przerwa między seriami</span><span><b class="t-cool"></b>Schłodzenie</span>
+    </div>
+    <ol class="exlist" id="exlist"></ol>
+  </section>
+
+  <section class="sound" aria-label="Dźwięk">
+    <div class="toggles">
+      <label for="o-beep"><input id="o-beep" type="checkbox" checked> Sygnały</label>
+      <label for="o-voice"><input id="o-voice" type="checkbox" checked> Głos lektora</label>
+      <label for="o-half"><input id="o-half" type="checkbox"> Sygnał w połowie</label>
+    </div>
+    <label class="vol" for="o-vol">Głośność <input id="o-vol" type="range" min="0" max="100" value="80"></label>
+    <button class="btn" id="test" type="button">Test dźwięku</button>
+  </section>
+
+  <button class="btn primary" id="start" type="button">Start</button>
+
+  <section style="display:grid;gap:8px">
+    <h2>Technika</h2>
+    <ul class="tips">
+      <li>Długość: stań na środku linki, uchwyty powinny sięgać mniej więcej pach.</li>
+      <li>Kręć z nadgarstków, łokcie trzymaj blisko tułowia.</li>
+      <li>Skacz nisko, na palcach, lądowanie miękkie z lekko ugiętymi kolanami.</li>
+      <li>Jeśli ćwiczenie nie wychodzi, zrób w tym czasie podstawowy skok. Tempo ważniejsze niż figura.</li>
+    </ul>
+  </section>
+</div>
+
+<div class="runner" id="runner" hidden role="region" aria-label="Trening w toku">
+  <div class="r-top">
+    <span id="r-plan"></span>
+    <button class="ghost" id="r-stop" type="button">Zakończ</button>
+  </div>
+  <div class="r-mid" id="r-live">
+    <div class="phase" id="r-phase">Przygotuj się</div>
+    <div class="exname" id="r-name"></div>
+    <p class="cue" id="r-cue"></p>
+    <div class="clock num" id="r-clock" aria-live="off">0:10</div>
+    <div class="nextup" id="r-next"></div>
+  </div>
+  <div class="r-mid done-panel" id="r-done" hidden>
+    <div class="phase">Koniec treningu</div>
+    <div class="exname">Dobra robota</div>
+    <dl class="facts" id="done-facts" style="justify-content:center"></dl>
+  </div>
+  <div class="r-bot">
+    <div class="bar" aria-hidden="true"><i id="r-bar"></i></div>
+    <div class="r-stats num"><span id="r-round"></span><span id="r-total"></span></div>
+    <div class="bar thin" aria-hidden="true"><i id="r-all"></i></div>
+    <div class="ctrls" id="r-ctrls">
+      <button type="button" id="r-back" aria-label="Poprzedni etap">Wstecz</button>
+      <button type="button" class="main" id="r-pause">Pauza</button>
+      <button type="button" id="r-skip" aria-label="Następny etap">Dalej</button>
+    </div>
+    <button type="button" class="btn primary" id="r-close" hidden style="background:#fff;color:#141a2c;border-color:#fff">Wróć do planu</button>
+  </div>
+</div>
+
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+
+  const EX = {
+    basic:  { name: 'Podstawowy skok', en: 'Basic bounce', cue: 'Stopy razem, niskie skoki na palcach, łokcie przy tułowiu.' },
+    boxer:  { name: 'Krok bokserski',  en: 'Boxer step',   cue: 'Przenoś ciężar z nogi na nogę, jedna stopa lekko przed drugą.' },
+    knees:  { name: 'Wysokie kolana',  en: 'High knees',   cue: 'Bieg w miejscu, kolana do wysokości bioder, brzuch napięty.' },
+    side:   { name: 'Skoki na boki',   en: 'Side to side', cue: 'Skoki obunóż w bok o 20–30 cm, lądowanie miękkie.' },
+    cross:  { name: 'Skrzyżowanie',    en: 'Criss-cross',  cue: 'Co drugi obrót skrzyżuj ręce przed sobą, potem otwórz.' },
+    double: { name: 'Podwójny obrót',  en: 'Double under', cue: 'Wyższy skok, szybkie nadgarstki. Linka przechodzi 2× pod stopami.' },
+  };
+
+  const WARMUP = [
+    ['Marsz w miejscu', 60, 'Spokojnie, unoś kolana, pracuj ramionami.'],
+    ['Krążenia ramion', 45, 'Duże kręgi w przód i w tył.'],
+    ['Krążenia nadgarstków i kostek', 45, 'Rozluźnij stawy, które będą pracować najwięcej.'],
+    ['Przysiady', 45, 'Spokojne tempo, pełny zakres.'],
+    ['Podskoki bez skakanki', 45, 'Lekko na palcach, naśladuj ruch nadgarstków.'],
+    ['Luźne skakanie', 60, 'Podstawowy skok w wolnym tempie.'],
+  ];
+  const COOLDOWN = [
+    ['Marsz i spokojny oddech', 60, 'Wdech nosem, długi wydech ustami.'],
+    ['Rozciąganie łydek', 60, 'Oprzyj ręce o ścianę, pięta przy podłodze. 30 s na nogę.'],
+    ['Rozciąganie przodu uda', 60, 'Przyciągnij piętę do pośladka. 30 s na nogę.'],
+    ['Skłon do nóg', 60, 'Kolana lekko ugięte, rozluźnij plecy.'],
+    ['Rozciąganie barków', 60, 'Ramię przed klatką, dociśnij drugą ręką. 30 s na stronę.'],
+  ];
+
+  const PLANS = [
+    { id: 'beg', level: 'Początkujący', name: 'Pierwsze interwały', work: 30, rest: 30, sets: 5, setRest: 90,
+      ex: ['basic', 'boxer', 'side', 'knees'], warmup: true, cooldown: true },
+    { id: 'mid', level: 'Średniozaawansowany', name: 'Interwały 40/20', work: 40, rest: 20, sets: 4, setRest: 60,
+      ex: ['basic', 'boxer', 'knees', 'side', 'cross'], warmup: true, cooldown: true },
+    { id: 'adv', level: 'Zaawansowany', name: 'Spalanie 45/15', work: 45, rest: 15, sets: 4, setRest: 45,
+      ex: ['basic', 'knees', 'cross', 'side', 'double', 'boxer'], warmup: true, cooldown: true },
+    { id: 'tabata', level: 'Szybki', name: 'Tabata 20/10', work: 20, rest: 10, sets: 1, setRest: 0,
+      ex: ['basic', 'knees', 'basic', 'knees', 'basic', 'knees', 'basic', 'knees'], warmup: false, cooldown: false },
+    { id: 'custom', level: 'Własny', name: 'Twoje ustawienia' },
+  ];
+
+  const store = {
+    get(k, d) { try { const v = localStorage.getItem('skakanka:' + k); return v == null ? d : JSON.parse(v); } catch { return d; } },
+    set(k, v) { try { localStorage.setItem('skakanka:' + k, JSON.stringify(v)); } catch {} },
+  };
+
+  const fmt = (s) => { s = Math.max(0, Math.round(s)); return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0'); };
+  const mins = (s) => Math.round(s / 60) + ' min';
+
+  // ---------- plan building ----------
+  function customPlan() {
+    const n = (id, d, lo, hi) => { const v = parseInt($(id).value, 10); return Number.isFinite(v) ? Math.min(hi, Math.max(lo, v)) : d; };
+    const ex = [...document.querySelectorAll('#c-ex input:checked')].map((i) => i.value);
+    return { id: 'custom', level: 'Własny', name: 'Twoje ustawienia',
+      work: n('c-work', 30, 5, 600), rest: n('c-rest', 30, 0, 600), sets: n('c-sets', 3, 1, 20),
+      setRest: n('c-setrest', 60, 0, 600), ex: ex.length ? ex : ['basic'],
+      warmup: $('c-warm').checked, cooldown: $('c-cool').checked };
+  }
+
+  function build(p) {
+    const steps = [{ type: 'prep', secs: 10, name: 'Przygotuj się', cue: 'Weź skakankę i stań w miejscu z wolną przestrzenią.' }];
+    if (p.warmup) WARMUP.forEach(([name, secs, cue]) => steps.push({ type: 'warm', secs, name, cue }));
+    let k = 0;
+    const totalWork = p.sets * p.ex.length;
+    for (let s = 0; s < p.sets; s++) {
+      p.ex.forEach((id, j) => {
+        k++;
+        steps.push({ type: 'work', secs: p.work, ex: id, name: EX[id].name, cue: EX[id].cue,
+          label: `Seria ${s + 1}/${p.sets} · ćwiczenie ${j + 1}/${p.ex.length}`, k, of: totalWork });
+        const lastInSet = j === p.ex.length - 1;
+        if (!lastInSet && p.rest > 0) steps.push({ type: 'rest', secs: p.rest, name: 'Odpoczynek', cue: 'Oddychaj, rozluźnij ramiona.' });
+      });
+      if (s < p.sets - 1 && p.setRest > 0) steps.push({ type: 'set', secs: p.setRest, name: 'Przerwa', cue: `Koniec serii ${s + 1}. Napij się wody, chodź spokojnie.` });
+      else if (s < p.sets - 1 && p.rest > 0) steps.push({ type: 'rest', secs: p.rest, name: 'Odpoczynek', cue: 'Oddychaj, rozluźnij ramiona.' });
+    }
+    if (p.cooldown) COOLDOWN.forEach(([name, secs, cue]) => steps.push({ type: 'cool', secs, name, cue }));
+    return steps;
+  }
+
+  // ---------- setup UI ----------
+  let selected = store.get('plan', 'beg');
+  if (!PLANS.some((p) => p.id === selected)) selected = 'beg';
+  const currentPlan = () => (selected === 'custom' ? customPlan() : PLANS.find((p) => p.id === selected));
+
+  function planMeta(p) {
+    return `${p.sets} ${p.sets === 1 ? 'seria' : p.sets < 5 ? 'serie' : 'serii'} × ${p.ex.length} ćw. · ${p.work} s / ${p.rest} s`;
+  }
+
+  function renderPlans() {
+    $('plans').innerHTML = PLANS.map((p) => {
+      const plan = p.id === 'custom' ? customPlan() : p;
+      const total = build(plan).reduce((a, s) => a + s.secs, 0);
+      return `<button type="button" class="plan" data-id="${p.id}" aria-pressed="${p.id === selected}">
+        <span class="eyebrow">${p.level}</span><strong>${p.name}</strong>
+        <span class="meta">${planMeta(plan)}</span><span class="total num">${mins(total)}</span></button>`;
+    }).join('');
+  }
+
+  function renderSummary() {
+    const p = currentPlan();
+    const steps = build(p);
+    const total = steps.reduce((a, s) => a + s.secs, 0);
+    const work = steps.filter((s) => s.type === 'work');
+    const workSecs = work.reduce((a, s) => a + s.secs, 0);
+    $('facts').innerHTML = `
+      <div><dd class="num">${fmt(total)}</dd><dt>Całość</dt></div>
+      <div><dd class="num">${fmt(workSecs)}</dd><dt>Czysta praca</dt></div>
+      <div><dd class="num">${work.length}</dd><dt>Interwały</dt></div>
+      <div><dd class="num">${p.work}/${p.rest}</dd><dt>Praca/odpoczynek (s)</dt></div>`;
+    $('strip').innerHTML = steps.map((s) => `<i class="t-${s.type}" style="flex:${s.secs}"></i>`).join('');
+    const unique = [...new Set(p.ex)];
+    $('exlist').innerHTML = unique.map((id, i) =>
+      `<li><span class="n num">${i + 1}</span><b>${EX[id].name} <em>${EX[id].en}</em></b><small>${EX[id].cue}</small></li>`).join('');
+    $('custom').hidden = selected !== 'custom';
+  }
+
+  function refresh() { renderPlans(); renderSummary(); }
+
+  $('plans').addEventListener('click', (e) => {
+    const b = e.target.closest('.plan'); if (!b) return;
+    selected = b.dataset.id; store.set('plan', selected); refresh();
+  });
+
+  // custom form
+  const savedCustom = store.get('custom', null);
+  $('c-ex').innerHTML = Object.entries(EX).map(([id, e]) =>
+    `<label for="cx-${id}"><input id="cx-${id}" type="checkbox" value="${id}"> ${e.name}</label>`).join('');
+  const defaultsEx = savedCustom?.ex || ['basic', 'boxer', 'knees'];
+  defaultsEx.forEach((id) => { const el = $('cx-' + id); if (el) el.checked = true; });
+  if (savedCustom) {
+    ['work', 'rest', 'sets', 'setrest'].forEach((k) => { if (savedCustom[k] != null) $('c-' + k).value = savedCustom[k]; });
+    $('c-warm').checked = savedCustom.warmup !== false; $('c-cool').checked = savedCustom.cooldown !== false;
+  }
+  $('custom').addEventListener('input', () => {
+    const p = customPlan();
+    store.set('custom', { work: p.work, rest: p.rest, sets: p.sets, setrest: p.setRest, ex: p.ex, warmup: p.warmup, cooldown: p.cooldown });
+    refresh();
+  });
+
+  // ---------- sound ----------
+  const opts = store.get('opts', { beep: true, voice: true, half: false, vol: 80 });
+  $('o-beep').checked = opts.beep; $('o-voice').checked = opts.voice; $('o-half').checked = opts.half; $('o-vol').value = opts.vol;
+  document.querySelector('.sound').addEventListener('input', () => {
+    opts.beep = $('o-beep').checked; opts.voice = $('o-voice').checked; opts.half = $('o-half').checked; opts.vol = +$('o-vol').value;
+    store.set('opts', opts);
+  });
+
+  let ctx = null;
+  function audio() {
+    if (!ctx) { const AC = window.AudioContext || window.webkitAudioContext; if (!AC) return null; ctx = new AC(); }
+    if (ctx.state === 'suspended') ctx.resume();
+    return ctx;
+  }
+  function tone(freq, dur, at = 0, type = 'square', level = 1) {
+    if (!opts.beep) return;
+    const c = audio(); if (!c) return;
+    const v = (opts.vol / 100) * 0.35 * level; if (v <= 0) return;
+    const t = c.currentTime + 0.02 + at;
+    const o = c.createOscillator(), g = c.createGain();
+    o.type = type; o.frequency.value = freq;
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(v, t + 0.01);
+    g.gain.setValueAtTime(v, t + Math.max(0.02, dur - 0.04));
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    o.connect(g).connect(c.destination);
+    o.start(t); o.stop(t + dur + 0.05);
+  }
+  const sfx = {
+    tick: () => tone(880, 0.12, 0, 'square', 0.7),
+    work: () => { tone(988, 0.14, 0); tone(1319, 0.55, 0.16); },
+    rest: () => { tone(659, 0.2, 0, 'triangle', 1.3); tone(440, 0.5, 0.22, 'triangle', 1.3); },
+    soft: () => tone(587, 0.35, 0, 'triangle', 1.2),
+    half: () => { tone(1568, 0.07, 0, 'sine', 1.4); tone(1568, 0.07, 0.12, 'sine', 1.4); },
+    done: () => [523, 659, 784, 1047].forEach((f, i) => tone(f, i === 3 ? 0.7 : 0.16, i * 0.17)),
+  };
+
+  let plVoice = null;
+  function pickVoice() {
+    if (!('speechSynthesis' in window)) return;
+    const vs = speechSynthesis.getVoices();
+    plVoice = vs.find((v) => /^pl/i.test(v.lang)) || null;
+  }
+  if ('speechSynthesis' in window) { pickVoice(); speechSynthesis.onvoiceschanged = pickVoice; }
+  function say(text, delay = 0) {
+    if (!opts.voice || !('speechSynthesis' in window)) return;
+    setTimeout(() => {
+      try {
+        speechSynthesis.cancel();
+        const u = new SpeechSynthesisUtterance(text);
+        u.lang = 'pl-PL'; if (plVoice) u.voice = plVoice;
+        u.volume = Math.min(1, opts.vol / 100); u.rate = 1.05;
+        speechSynthesis.speak(u);
+      } catch {}
+    }, delay);
+  }
+
+  $('test').addEventListener('click', () => {
+    audio();
+    sfx.tick(); setTimeout(sfx.tick, 1000); setTimeout(sfx.tick, 2000); setTimeout(sfx.work, 3000);
+    setTimeout(sfx.rest, 4300);
+    say('Test dźwięku. Start!', 0);
+  });
+
+  // ---------- runner ----------
+  const R = { steps: [], i: 0, endAt: 0, left: 0, paused: false, timer: null, lastSec: null, startedAt: 0, plan: null };
+  let wakeLock = null;
+  async function lock() { try { if ('wakeLock' in navigator) wakeLock = await navigator.wakeLock.request('screen'); } catch {} }
+  function unlock() { try { wakeLock && wakeLock.release(); } catch {} wakeLock = null; }
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && R.timer) lock(); });
+
+  const PHASE = { prep: 'Przygotuj się', warm: 'Rozgrzewka', work: 'Praca', rest: 'Odpoczynek', set: 'Przerwa między seriami', cool: 'Schłodzenie' };
+
+  function nextWork(from) { for (let j = from; j < R.steps.length; j++) if (R.steps[j].type === 'work') return R.steps[j]; return null; }
+
+  function announce(s) {
+    const nxt = R.steps[R.i + 1];
+    if (s.type === 'work') { sfx.work(); say(s.name, 650); }
+    else if (s.type === 'rest' || s.type === 'set') {
+      sfx.rest();
+      const nw = nextWork(R.i + 1);
+      say((s.type === 'set' ? 'Przerwa.' : 'Odpoczynek.') + (nw ? ' Następnie: ' + nw.name : ''), 750);
+    } else if (s.type === 'prep') { say('Przygotuj się. ' + (nxt ? nxt.name : ''), 0); }
+    else { sfx.soft(); say(s.name, 450); }
+  }
+
+  function enter(i, silent) {
+    R.i = i;
+    const s = R.steps[i];
+    R.left = s.secs * 1000;
+    R.endAt = performance.now() + R.left;
+    R.lastSec = s.secs;
+    if (!silent) announce(s);
+    paint();
+  }
+
+  function finish() {
+    clearInterval(R.timer); R.timer = null; unlock();
+    sfx.done(); say('Koniec treningu. Dobra robota!', 900);
+    const work = R.steps.filter((s) => s.type === 'work');
+    const elapsed = (performance.now() - R.startedAt) / 1000;
+    $('runner').className = 'runner p-done';
+    $('r-live').hidden = true; $('r-done').hidden = false;
+    $('r-ctrls').hidden = true; $('r-close').hidden = false; $('r-stop').hidden = true;
+    $('r-bar').style.width = '100%'; $('r-all').style.width = '100%';
+    $('r-round').textContent = ''; $('r-total').textContent = '';
+    $('done-facts').innerHTML = `
+      <div><dd class="num">${fmt(elapsed)}</dd><dt style="color:inherit;opacity:.8">Czas</dt></div>
+      <div><dd class="num">${work.length}</dd><dt style="color:inherit;opacity:.8">Interwały</dt></div>
+      <div><dd class="num">${fmt(work.reduce((a, s) => a + s.secs, 0))}</dd><dt style="color:inherit;opacity:.8">Skakania</dt></div>`;
+  }
+
+  function tick() {
+    if (R.paused) return;
+    const s = R.steps[R.i];
+    const rem = R.endAt - performance.now();
+    const sec = Math.ceil(rem / 1000);
+    if (sec !== R.lastSec) {
+      R.lastSec = sec;
+      if (sec >= 1 && sec <= 3) sfx.tick();
+      if (opts.half && s.type === 'work' && s.secs >= 20 && sec === Math.floor(s.secs / 2)) sfx.half();
+    }
+    if (rem <= 0) {
+      if (R.i + 1 >= R.steps.length) return finish();
+      return enter(R.i + 1);
+    }
+    paint(rem);
+  }
+
+  function paint(rem) {
+    const s = R.steps[R.i];
+    if (rem == null) rem = R.paused ? R.left : R.endAt - performance.now();
+    const r = $('runner');
+    r.className = 'runner p-' + s.type + (R.paused ? ' paused' : '');
+    $('r-phase').textContent = R.paused ? 'Pauza' : PHASE[s.type];
+    $('r-name').textContent = s.type === 'rest' ? '' : s.name;
+    $('r-cue').textContent = s.cue || '';
+    $('r-clock').textContent = fmt(Math.ceil(Math.max(0, rem) / 1000));
+    const nxt = R.steps[R.i + 1];
+    let nextTxt = '';
+    if (s.type === 'rest' || s.type === 'set' || s.type === 'prep') {
+      const nw = s.type === 'prep' ? nxt : nextWork(R.i + 1);
+      if (nw) nextTxt = `Następnie: <b>${nw.name}</b> · ${fmt(nw.secs)}`;
+      if (s.type === 'rest') $('r-name').textContent = nw ? nw.name : '';
+    } else if (nxt) nextTxt = `Potem: <b>${nxt.type === 'rest' ? 'Odpoczynek' : nxt.name}</b> · ${fmt(nxt.secs)}`;
+    else nextTxt = 'Ostatni etap';
+    $('r-next').innerHTML = nextTxt;
+    $('r-bar').style.width = (100 * (1 - Math.max(0, rem) / (s.secs * 1000))).toFixed(2) + '%';
+    const total = R.steps.reduce((a, x) => a + x.secs, 0);
+    const done = R.steps.slice(0, R.i).reduce((a, x) => a + x.secs, 0) + (s.secs - Math.max(0, rem) / 1000);
+    $('r-all').style.width = (100 * done / total).toFixed(2) + '%';
+    const nw = s.type === 'work' ? s : nextWork(R.i);
+    $('r-round').textContent = s.type === 'work' ? `${s.label} · interwał ${s.k}/${s.of}` : (nw ? `Przed interwałem ${nw.k}/${nw.of}` : 'Po części głównej');
+    $('r-total').textContent = `Zostało ${fmt(total - done)}`;
+    $('r-pause').textContent = R.paused ? 'Wznów' : 'Pauza';
+  }
+
+  function start() {
+    audio(); // unlock audio on user gesture
+    R.plan = currentPlan();
+    R.steps = build(R.plan);
+    R.paused = false; R.startedAt = performance.now();
+    $('setup').hidden = true; $('runner').hidden = false;
+    $('r-live').hidden = false; $('r-done').hidden = true;
+    $('r-ctrls').hidden = false; $('r-close').hidden = true; $('r-stop').hidden = false;
+    $('r-plan').textContent = `${R.plan.level} · ${R.plan.name}`;
+    window.scrollTo(0, 0);
+    lock();
+    enter(0);
+    clearInterval(R.timer);
+    R.timer = setInterval(tick, 100);
+  }
+
+  function togglePause() {
+    if (!R.timer) return;
+    if (R.paused) { R.paused = false; R.endAt = performance.now() + R.left; say('Wznawiam'); }
+    else { R.left = Math.max(0, R.endAt - performance.now()); R.paused = true; try { speechSynthesis.cancel(); } catch {} }
+    paint();
+  }
+  function skip() { if (!R.timer) return; if (R.i + 1 >= R.steps.length) return finish(); const p = R.paused; enter(R.i + 1); if (p) { R.left = R.steps[R.i].secs * 1000; paint(); } }
+  function back() {
+    if (!R.timer) return;
+    const s = R.steps[R.i];
+    const elapsed = s.secs * 1000 - (R.paused ? R.left : R.endAt - performance.now());
+    const target = elapsed > 2500 || R.i === 0 ? R.i : R.i - 1;
+    const p = R.paused; enter(target); if (p) { R.left = R.steps[R.i].secs * 1000; paint(); }
+  }
+  function stop() {
+    clearInterval(R.timer); R.timer = null; unlock();
+    try { speechSynthesis.cancel(); } catch {}
+    $('runner').hidden = true; $('setup').hidden = false;
+  }
+
+  $('start').addEventListener('click', start);
+  $('r-pause').addEventListener('click', togglePause);
+  $('r-skip').addEventListener('click', skip);
+  $('r-back').addEventListener('click', back);
+  $('r-stop').addEventListener('click', stop);
+  $('r-close').addEventListener('click', stop);
+  document.addEventListener('keydown', (e) => {
+    if ($('runner').hidden || e.target.closest('input')) return;
+    if (e.code === 'Space') { e.preventDefault(); togglePause(); }
+    else if (e.key === 'ArrowRight') skip();
+    else if (e.key === 'ArrowLeft') back();
+    else if (e.key === 'Escape') stop();
+  });
+
+  refresh();
+})();
+</script>
+</html>
